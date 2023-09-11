@@ -21,7 +21,7 @@ var _ MappedNullable = &ProcessorConfigDTO{}
 // ProcessorConfigDTO struct for ProcessorConfigDTO
 type ProcessorConfigDTO struct {
 	// The properties for the processor. Properties whose value is not set will only contain the property name.
-	Properties *map[string]string `json:"properties,omitempty"`
+	Properties *map[string]*string `json:"properties,omitempty"`
 	// Descriptors for the processor's properties.
 	Descriptors *map[string]PropertyDescriptorDTO `json:"descriptors,omitempty"`
 	// Set of sensitive dynamic property names
@@ -84,9 +84,9 @@ func NewProcessorConfigDTOWithDefaults() *ProcessorConfigDTO {
 }
 
 // GetProperties returns the Properties field value if set, zero value otherwise.
-func (o *ProcessorConfigDTO) GetProperties() map[string]string {
+func (o *ProcessorConfigDTO) GetProperties() map[string]*string {
 	if o == nil || IsNil(o.Properties) {
-		var ret map[string]string
+		var ret map[string]*string
 		return ret
 	}
 	return *o.Properties
@@ -94,7 +94,7 @@ func (o *ProcessorConfigDTO) GetProperties() map[string]string {
 
 // GetPropertiesOk returns a tuple with the Properties field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *ProcessorConfigDTO) GetPropertiesOk() (*map[string]string, bool) {
+func (o *ProcessorConfigDTO) GetPropertiesOk() (*map[string]*string, bool) {
 	if o == nil || IsNil(o.Properties) {
 		return nil, false
 	}
@@ -111,7 +111,7 @@ func (o *ProcessorConfigDTO) HasProperties() bool {
 }
 
 // SetProperties gets a reference to the given map[string]string and assigns it to the Properties field.
-func (o *ProcessorConfigDTO) SetProperties(v map[string]string) {
+func (o *ProcessorConfigDTO) SetProperties(v map[string]*string) {
 	o.Properties = &v
 }
 

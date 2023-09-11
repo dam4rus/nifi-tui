@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"sync"
@@ -188,7 +189,20 @@ func (a *App) enterProcessorDetailsScreen(processor *nifiapi.ProcessorEntity) {
 
 	for k, v := range processorDetailsScreen.properties {
 		k, v := k, v
-		processorDetailsScreen.list.AddItem(k, v, 0, func() { processorDetailsScreen.onPropertySelected(k) })
+		descriptor := (*processor.Component.Config.Descriptors)[k]
+		displayName := descriptor.DisplayName
+		var value string
+		if v != nil {
+			if allowableValue := findAllowableValueByValue(descriptor.AllowableValues, *v); allowableValue != nil {
+				value = *allowableValue.DisplayName
+			}
+			if value == "" {
+				value = *v
+			}
+		} else {
+			value = ""
+		}
+		processorDetailsScreen.list.AddItem(*displayName, value, 0, func() { processorDetailsScreen.onPropertySelected(k) })
 	}
 
 	a.pages.AddPage(*processor.Id, processorDetailsScreen.list, true, true)
@@ -197,17 +211,33 @@ func (a *App) enterProcessorDetailsScreen(processor *nifiapi.ProcessorEntity) {
 type ProcessorDetailsScreen struct {
 	app        *App
 	processor  *nifiapi.ProcessorEntity
-	properties map[string]string
+	properties map[string]*string
 	list       *tview.List
 	modified   bool
 }
 
 func (s *ProcessorDetailsScreen) save() {
-	processor := *s.processor
-	processor.Component.Config.Properties = &s.properties
-	s.app.apiClient.ProcessorsAPI.UpdateProcessor(context.Background(), *s.processor.Id).
+	processor := nifiapi.ProcessorEntity{
+		Component: &nifiapi.ProcessorDTO{
+			Id: s.processor.Id,
+			Config: &nifiapi.ProcessorConfigDTO{
+				Properties: &s.properties,
+			},
+		},
+		Revision: s.processor.Revision,
+	}
+	updatedProcessor, response, err := s.app.apiClient.ProcessorsAPI.UpdateProcessor(context.Background(), *processor.Component.Id).
 		Body(processor).
 		Execute()
+	if err != nil {
+		body, readErr := io.ReadAll(response.Body)
+		if readErr == nil {
+			panic(string(body))
+		} else {
+			panic(err)
+		}
+	}
+	s.processor = updatedProcessor
 	s.modified = false
 }
 
@@ -254,26 +284,32 @@ func (s *ProcessorDetailsScreen) onPropertySelected(key string) {
 		allowableValues = append(allowableValues, *allowableValue.AllowableValue.Value)
 	}
 	if len(allowableValues) == 2 && slices.Contains(allowableValues, "true") && slices.Contains(allowableValues, "false") {
-		if s.properties[key] == "true" {
+		if *s.properties[key] == "true" {
 			s.setProperty(key, "false")
 		} else {
 			s.setProperty(key, "true")
 		}
 		return
 	}
-	newValue := s.properties[key]
+	newValue := *s.properties[key]
 	form := tview.NewForm()
 
 	var gridHeight int
 	if len(allowableValues) > 0 {
-		form.AddDropDown(key, allowableValues, slices.Index(allowableValues, s.properties[key]), func(option string, optionIndex int) {
-			s.setProperty(key, option)
-			s.app.pages.RemovePage("Property")
+		var allowableValueDisplayNames []string
+		for _, allowableValue := range propertyDescriptor.AllowableValues {
+			allowableValueDisplayNames = append(allowableValueDisplayNames, *allowableValue.AllowableValue.DisplayName)
+		}
+		form.AddDropDown(key, allowableValueDisplayNames, slices.Index(allowableValues, *s.properties[key]), func(option string, optionIndex int) {
+			if optionIndex >= 0 {
+				s.setProperty(key, allowableValues[optionIndex])
+				s.app.pages.RemovePage("Property")
+			}
 		})
 
 		gridHeight = 5
 	} else {
-		form.AddTextArea(key, s.properties[key], 100, 5, 0, func(text string) {
+		form.AddTextArea(key, *s.properties[key], 100, 5, 0, func(text string) {
 			newValue = text
 		}).
 			AddButton("Save", func() {
@@ -311,7 +347,24 @@ func (s *ProcessorDetailsScreen) onPropertySelected(key string) {
 }
 
 func (s *ProcessorDetailsScreen) setProperty(key, newValue string) {
-	s.properties[key] = newValue
-	s.list.SetItemText(s.list.GetCurrentItem(), key, newValue)
+	s.properties[key] = &newValue
+	descriptor := (*s.processor.Component.Config.Descriptors)[key]
+	displayName := descriptor.DisplayName
+	var value string
+	if allowableValue := findAllowableValueByValue(descriptor.AllowableValues, newValue); allowableValue != nil {
+		value = *allowableValue.DisplayName
+	} else {
+		value = newValue
+	}
+	s.list.SetItemText(s.list.GetCurrentItem(), *displayName, value)
 	s.modified = true
+}
+
+func findAllowableValueByValue(allowableValues []nifiapi.AllowableValueEntity, value string) *nifiapi.AllowableValueDTO {
+	for _, allowableValue := range allowableValues {
+		if *allowableValue.AllowableValue.Value == value {
+			return allowableValue.AllowableValue
+		}
+	}
+	return nil
 }
