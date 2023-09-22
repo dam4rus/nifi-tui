@@ -3,7 +3,6 @@ package nifitui
 import (
 	"context"
 	"dam4rus/nifi-tui/internal/pkg/nifiapi"
-	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,20 +99,7 @@ func (s *processorDetailsScreen) save() {
 		Body(processor).
 		Execute()
 	if err != nil {
-		body, readErr := io.ReadAll(response.Body)
-		modal := tview.NewModal().
-			AddButtons([]string{"Ok"}).
-			SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-				s.pages.RemovePage("Error")
-			})
-		modal.SetTitle("Error").
-			SetBorder(true)
-		if readErr == nil {
-			modal.SetText(string(body))
-		} else {
-			modal.SetText(err.Error())
-		}
-		s.pages.AddPage("Error", modal, true, true)
+		s.app.showErrorDialog(response, err)
 		return
 	}
 	s.processor = updatedProcessor

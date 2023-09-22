@@ -36,7 +36,10 @@ func main() {
 			if err != nil {
 				return err
 			}
-			app := nifitui.NewApp(nifiApiUrl, userName, password)
+			app, err := nifitui.NewApp(nifiApiUrl, userName, password)
+			if err != nil {
+				return err
+			}
 			app.EnterRootProcessGroupScreen()
 			if err := app.Run(); err != nil {
 				return err

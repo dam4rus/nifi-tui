@@ -6,13 +6,12 @@ import (
 )
 
 type processGroupComponents struct {
-	id            string
-	processGroups *nifiapi.ProcessGroupsEntity
-	processors    *nifiapi.ProcessorsEntity
-	connections   *nifiapi.ConnectionsEntity
-	funnels       *nifiapi.FunnelsEntity
-	inputPorts    *nifiapi.InputPortsEntity
-	outputPorts   *nifiapi.OutputPortsEntity
+	processGroups []nifiapi.ProcessGroupEntity
+	processors    []nifiapi.ProcessorEntity
+	connections   []nifiapi.ConnectionEntity
+	funnels       []nifiapi.FunnelEntity
+	inputPorts    []nifiapi.PortEntity
+	outputPorts   []nifiapi.PortEntity
 }
 
 func (pgc *processGroupComponents) findComponent(componentType, id string) Component {
@@ -30,7 +29,7 @@ func (pgc *processGroupComponents) findComponent(componentType, id string) Compo
 }
 
 func (pgc *processGroupComponents) findProcessorComponent(id string) Component {
-	for _, processor := range pgc.processors.Processors {
+	for _, processor := range pgc.processors {
 		if processor.Component.GetId() == id {
 			return processor.Component
 		}
@@ -39,7 +38,7 @@ func (pgc *processGroupComponents) findProcessorComponent(id string) Component {
 }
 
 func (pgc *processGroupComponents) findFunnelComponent(id string) Component {
-	for _, funnel := range pgc.funnels.Funnels {
+	for _, funnel := range pgc.funnels {
 		if funnel.Component.GetId() == id {
 			return &FunnelComponent{
 				Id: funnel.Component.GetId(),
@@ -50,7 +49,7 @@ func (pgc *processGroupComponents) findFunnelComponent(id string) Component {
 }
 
 func (pgc *processGroupComponents) findInputPortComponent(id string) Component {
-	for _, inputPort := range pgc.inputPorts.InputPorts {
+	for _, inputPort := range pgc.inputPorts {
 		if inputPort.Component.GetId() == id {
 			return inputPort.Component
 		}
@@ -59,7 +58,7 @@ func (pgc *processGroupComponents) findInputPortComponent(id string) Component {
 }
 
 func (pgc *processGroupComponents) findOutputPortComponent(id string) Component {
-	for _, outputPort := range pgc.outputPorts.OutputPorts {
+	for _, outputPort := range pgc.outputPorts {
 		if outputPort.Component.GetId() == id {
 			return outputPort.Component
 		}
