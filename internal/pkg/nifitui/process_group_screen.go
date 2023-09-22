@@ -21,19 +21,13 @@ const (
 )
 
 const (
-	SymbolProcessGroup = "📁"
-	SymbolProcessor    = "⊞"
-	SymbolFunnel       = "Ⴤ"
-	SymbolInputPort    = "⇥"
-	SymbolOutputPort   = "↦"
-)
-
-const (
-	ComponentTypeProcessGroup = "Process Group"
-	ComponentTypeProcessor    = "Processor"
-	ComponentTypeFunnel       = "Funnel"
-	ComponentTypeInputPort    = "Input Port"
-	ComponentTypeOutputPort   = "Output Port"
+	SymbolProcessGroup       = "📁"
+	SymbolProcessor          = "⊞"
+	SymbolRemoteProcessGroup = "☁️"
+	SymbolFunnel             = "Ⴤ"
+	SymbolInputPort          = "⇥"
+	SymbolOutputPort         = "↦"
+	SymbolConnection         = "->"
 )
 
 type processGroupScreen struct {
@@ -43,12 +37,7 @@ type processGroupScreen struct {
 	helpFlex        *tview.Flex
 	mode            mode
 	components      processGroupComponents
-	sourceComponent *connectableComponent
-}
-
-type connectableComponent struct {
-	componentType string
-	id            string
+	sourceComponent connectableComponent
 }
 
 func newProcessGroupScreen(app *App, processGroupId string) *processGroupScreen {
@@ -90,21 +79,16 @@ func newProcessGroupScreen(app *App, processGroupId string) *processGroupScreen 
 					instance.setMode(ModeAdd)
 					return nil
 				case 'c':
-					selectedType, selectedId := instance.selectedComponentTypeAndId()
-					if selectedType != nil {
-						instance.sourceComponent = &connectableComponent{
-							id:            *selectedId,
-							componentType: *selectedType,
+					if selectedComponent := instance.getSelectedComponent(); selectedComponent != nil {
+						if selectedComponent.GetComponentType() == ComponentTypeProcessor {
+							instance.setMode(ModeConnect)
+							instance.sourceComponent = selectedComponent
 						}
-						instance.setMode(ModeConnect)
 					}
 					return nil
 				case 'd':
-					if selectedComponentType, selectedComponentId := instance.selectedComponentTypeAndId(); selectedComponentType != nil {
-						switch *selectedComponentType {
-						case ComponentTypeProcessGroup:
-							instance.deleteProcessGroup(*selectedComponentId)
-						}
+					if selectedComponent := instance.getSelectedComponent(); selectedComponent != nil {
+						instance.deleteComponent(selectedComponent)
 					}
 
 					return nil
@@ -118,6 +102,10 @@ func newProcessGroupScreen(app *App, processGroupId string) *processGroupScreen 
 				}
 				instance.setMode(ModeNone)
 				return nil
+			case ModeConnect:
+				if event.Key() == tcell.KeyESC {
+					instance.setMode(ModeNone)
+				}
 			}
 
 			return event
@@ -132,15 +120,16 @@ func (pgs *processGroupScreen) enter() {
 func (pgs *processGroupScreen) loadComponents() {
 	loadingPage := pgs.app.enterLoadingScreen(pgs.processGroupId, "Loading process group")
 
-	proxy := pgs.app.newProcessGroupProxy(pgs.processGroupId)
+	proxy := newAsyncProcessGroupProxy(pgs.app.apiClient, pgs.processGroupId)
 	pgs.app.cancelFunc = proxy.cancelFunc
-	proxy.waitGroup.Add(6)
+	proxy.waitGroup.Add(7)
 	processGroupsChannel := proxy.getProcessGroups()
 	processorsChannel := proxy.getProcessors()
 	connectionsChannel := proxy.getConnections()
 	funnelsChannel := proxy.getFunnels()
 	inputPortsChannel := proxy.getInputPorts()
 	outputPortsChannel := proxy.getOutputPorts()
+	remoteProcessGroupsChannel := proxy.getRemoteProcessGroups()
 
 	go func(ctx context.Context) {
 		proxy.waitGroup.Wait()
@@ -161,12 +150,14 @@ func (pgs *processGroupScreen) loadComponents() {
 		funnels := <-funnelsChannel
 		inputPorts := <-inputPortsChannel
 		outputPorts := <-outputPortsChannel
+		remoteProcessGroups := <-remoteProcessGroupsChannel
 		pgs.components.processGroups = processGroups.ProcessGroups
 		pgs.components.processors = processors.Processors
 		pgs.components.connections = connections.Connections
 		pgs.components.funnels = funnels.Funnels
 		pgs.components.inputPorts = inputPorts.InputPorts
 		pgs.components.outputPorts = outputPorts.OutputPorts
+		pgs.components.remoteProcessGroups = remoteProcessGroups.RemoteProcessGroups
 		pgs.app.app.QueueUpdateDraw(func() {
 			pgs.buildAndShowComponents()
 		})
@@ -195,12 +186,16 @@ func (pgs *processGroupScreen) buildAndShowComponents() {
 			case ModeNone:
 				pgs.onProcessorSelected(&processor)
 			case ModeConnect:
-				pgs.setMode(ModeNone)
-				if pgs.sourceComponent.componentType == ComponentTypeProcessor {
-					pgs.buildAndShowConnectProcessorToProcessor(pgs.sourceComponent.id, processor.Component.GetId())
+				if pgs.sourceComponent.GetComponentType() == ComponentTypeProcessor {
+					pgs.buildAndShowConnectProcessorToProcessor(pgs.sourceComponent.GetId(), processor.Component.GetId())
 				}
+				pgs.setMode(ModeNone)
 			}
 		})
+	}
+	for _, remoteProcessGroup := range pgs.components.remoteProcessGroups {
+		remoteProcessGroup := remoteProcessGroup
+		pgs.list.AddItem(SymbolRemoteProcessGroup+remoteProcessGroup.Component.GetName(), remoteProcessGroup.Component.GetId(), 0, nil)
 	}
 	for _, funnel := range pgs.components.funnels {
 		funnel := funnel
@@ -222,7 +217,9 @@ func (pgs *processGroupScreen) buildAndShowComponents() {
 		if sourceComponent == nil || destComponent == nil {
 			continue
 		}
-		pgs.list.AddItem(sourceComponent.GetName()+"->"+destComponent.GetName(), sourceComponent.GetId()+"->"+destComponent.GetId(), 0, nil)
+		primaryText := SymbolConnection + sourceComponent.GetName() + "[" + sourceComponent.GetId() + "]" +
+			SymbolConnection + destComponent.GetName() + "[" + destComponent.GetId() + "]"
+		pgs.list.AddItem(primaryText, connection.Component.GetId(), 0, nil)
 	}
 	pgs.app.pages.RemovePage("Loading")
 	pgs.app.pages.SwitchToPage(pgs.processGroupId)
@@ -471,15 +468,25 @@ func (pgs *processGroupScreen) createProcessorToProcessorConnection(sourceId, de
 	pgs.loadComponents()
 }
 
-func (pgs *processGroupScreen) deleteProcessGroup(processGroupId string) {
-	processGroup, response, err := pgs.app.apiClient.ProcessGroupsAPI.GetProcessGroup(context.Background(), processGroupId).
+func (pgs *processGroupScreen) deleteComponent(component connectableComponent) {
+	response, err := component.IntoProxy(pgs.app.apiClient).Remove()
+	if err != nil {
+		pgs.app.showErrorDialog(response, err)
+		return
+	}
+	pgs.list.Clear()
+	pgs.loadComponents()
+}
+
+func (pgs *processGroupScreen) deleteRemoteProcessGroup(remoteProcessGroupId string) {
+	remoteProcessGroup, response, err := pgs.app.apiClient.RemoteProcessGroupsAPI.GetRemoteProcessGroup(context.Background(), remoteProcessGroupId).
 		Execute()
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
 		return
 	}
-	_, response, err = pgs.app.apiClient.ProcessGroupsAPI.RemoveProcessGroup(context.Background(), processGroupId).
-		Version(strconv.Itoa(int(processGroup.Revision.GetVersion()))).
+	_, response, err = pgs.app.apiClient.RemoteProcessGroupsAPI.RemoveRemoteProcessGroup(context.Background(), remoteProcessGroupId).
+		Version(strconv.Itoa(int(remoteProcessGroup.Revision.GetVersion()))).
 		Execute()
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
@@ -491,29 +498,28 @@ func (pgs *processGroupScreen) deleteProcessGroup(processGroupId string) {
 
 func (pgs *processGroupScreen) setMode(mode mode) {
 	pgs.mode = mode
+	pgs.sourceComponent = nil
 	pgs.updateHelp()
 }
 
 func (pgs *processGroupScreen) updateHelp() {
 	switch pgs.mode {
-	case ModeAdd:
-		pgs.helpFlex.Clear().
-			AddItem(tview.NewTextView().SetText("Add:"), 5, 0, false).
-			AddItem(tview.NewTextView().SetText("[g]Process Group"), len("[g]Process Group")+1, 0, false).
-			AddItem(tview.NewTextView().SetText("[p]Processor"), len("[p]Processor")+1, 0, false).
-			AddItem(tview.NewTextView().SetText("[c]Connection"), len("[c]Connection")+1, 0, false)
 	case ModeNone:
 		pgs.helpFlex.Clear()
 		if pgs.processGroupId == "root" {
 			pgs.helpFlex.AddItem(tview.NewTextView().SetText("[q]Quit"), len("[q]Quit")+1, 0, false)
 		}
+		pgs.helpFlex.AddItem(tview.NewTextView().SetText("[r]Refresh"), len("[r]Refresh")+1, 0, false).
+			AddItem(tview.NewTextView().SetText("[a]Add component"), len("[a]Add component")+1, 1, false).
+			AddItem(tview.NewTextView().SetText("[d]Delete"), len("[d]Delete")+1, 0, false)
 
-		if selectedComponentType, _ := pgs.selectedComponentTypeAndId(); selectedComponentType != nil {
-			switch *selectedComponentType {
+		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
+			switch selectedComponent.GetComponentType() {
 			case ComponentTypeProcessGroup:
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Enter process group"), len("[Enter]Enter process group")+1, 0, false)
 			case ComponentTypeProcessor:
-				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Processor details"), len("[Enter]Processor details")+1, 0, false)
+				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[c]Connect"), len("[c]Connect")+1, 0, false).
+					AddItem(tview.NewTextView().SetText("[Enter]Processor details"), len("[Enter]Processor details")+1, 0, false)
 			case ComponentTypeFunnel:
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Funnel details"), len("[Enter]Funnel details")+1, 0, false)
 			case ComponentTypeInputPort:
@@ -522,36 +528,39 @@ func (pgs *processGroupScreen) updateHelp() {
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Output port details"), len("[Enter]Output port details")+1, 0, false)
 			}
 		}
-
-		pgs.helpFlex.AddItem(tview.NewTextView().SetText("[a]Add component"), 0, 1, false)
+	case ModeAdd:
+		pgs.helpFlex.Clear().
+			AddItem(tview.NewTextView().SetText("Add:"), 5, 0, false).
+			AddItem(tview.NewTextView().SetText("[g]Process Group"), len("[g]Process Group")+1, 0, false).
+			AddItem(tview.NewTextView().SetText("[p]Processor"), len("[p]Processor")+1, 0, false)
 	case ModeConnect:
 		pgs.helpFlex.Clear().
 			AddItem(tview.NewTextView().SetText("Select connection destination"), 0, 1, false)
 	}
 }
 
-func (pgs *processGroupScreen) selectedComponentTypeAndId() (*string, *string) {
+func (pgs *processGroupScreen) getSelectedComponent() connectableComponent {
 	if pgs.list.GetItemCount() == 0 {
-		return nil, nil
+		return nil
 	}
 	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
 		selectedItemText, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
 		if strings.HasPrefix(selectedItemText, SymbolProcessGroup) {
-			componentType := ComponentTypeProcessGroup
-			return &componentType, &selectedItemId
+			return &processGroup{id: selectedItemId}
 		} else if strings.HasPrefix(selectedItemText, SymbolProcessor) {
-			componentType := ComponentTypeProcessor
-			return &componentType, &selectedItemId
+			return &processor{id: selectedItemId}
 		} else if strings.HasPrefix(selectedItemText, SymbolFunnel) {
-			componentType := ComponentTypeFunnel
-			return &componentType, &selectedItemId
+			return &funnel{id: selectedItemId}
 		} else if strings.HasPrefix(selectedItemText, SymbolInputPort) {
-			componentType := ComponentTypeInputPort
-			return &componentType, &selectedItemId
+			return &inputPort{id: selectedItemId}
 		} else if strings.HasPrefix(selectedItemText, SymbolOutputPort) {
-			componentType := ComponentTypeOutputPort
-			return &componentType, &selectedItemId
+			return &outputPort{id: selectedItemId}
+		} else if strings.HasPrefix(selectedItemText, SymbolConnection) {
+			return &connection{id: selectedItemId}
+		} else if strings.HasPrefix(selectedItemText, SymbolRemoteProcessGroup) {
+			return &remoteProcessGroup{id: selectedItemId}
 		}
+		return nil
 	}
-	return nil, nil
+	return nil
 }
