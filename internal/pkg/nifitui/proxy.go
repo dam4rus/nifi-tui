@@ -1,4 +1,4 @@
-package app
+package nifitui
 
 import (
 	"context"

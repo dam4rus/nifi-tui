@@ -1,4 +1,4 @@
-package app
+package nifitui
 
 import (
 	"dam4rus/nifi-tui/internal/pkg/nifiapi"
