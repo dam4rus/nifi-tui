@@ -2,209 +2,393 @@ package nifitui
 
 import (
 	"dam4rus/nifi-tui/internal/pkg/nifiapi"
-	"net/http"
 	"slices"
 )
 
-const (
-	ComponentTypeProcessGroup       = "Process Group"
-	ComponentTypeProcessor          = "Processor"
-	ComponentTypeFunnel             = "Funnel"
-	ComponentTypeInputPort          = "Input Port"
-	ComponentTypeOutputPort         = "Output Port"
-	ComponentTypeConnection         = "Connection"
-	ComponentTypeRemoteProcessGroup = "Remote Process Group"
-)
-
-type componentDescriptor interface {
+type component interface {
 	GetId() string
-	GetName() string
+	CreateService(apiClient *nifiapi.APIClient) entityService
 }
 
-type connectableComponent interface {
-	GetComponentType() string
+type displayableComponent interface {
 	GetId() string
-	IntoProxy(apiClient *nifiapi.APIClient) componentProxy
+	GetDisplayName() string
 }
 
-type componentProxy interface {
-	Remove() (*http.Response, error)
+type connectionSource interface {
+	GetId() string
+	GetGroupId() string
+	GetConnectionSourceType() string
 }
 
-type processGroup struct {
-	id string
+type connectionDestination interface {
+	GetId() string
+	GetGroupId() string
+	GetConnectionDestinationType() string
 }
 
-func (pg *processGroup) GetComponentType() string {
-	return ComponentTypeProcessGroup
+type processGroupEntity struct {
+	id            string
+	name          string
+	parentGroupId string
 }
 
-func (pg *processGroup) GetId() string {
+func newProcessGroupEntity(entity nifiapi.ProcessGroupEntity) *processGroupEntity {
+	return &processGroupEntity{
+		id:            entity.Component.GetId(),
+		name:          entity.Component.GetName(),
+		parentGroupId: entity.Component.GetParentGroupId(),
+	}
+}
+
+func (pg *processGroupEntity) GetId() string {
 	return pg.id
 }
 
-func (pg *processGroup) IntoProxy(apiClient *nifiapi.APIClient) componentProxy {
-	return newProcessGroupProxy(apiClient, pg.id)
+func (pg *processGroupEntity) GetGroupId() string {
+	return pg.parentGroupId
 }
 
-type processor struct {
-	id string
+func (pg *processGroupEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
+	return newProcessGroupService(apiClient, pg.id)
 }
 
-func (p *processor) GetComponentType() string {
-	return ComponentTypeProcessor
+func (pg *processGroupEntity) GetConnectionSourceType() string {
+	return "OUTPUT_PORT"
 }
 
-func (p *processor) GetId() string {
+func (pg *processGroupEntity) GetConnectionDestinationType() string {
+	return "INPUT_PORT"
+}
+
+func (pg *processGroupEntity) GetDisplayName() string {
+	return SymbolProcessGroup + pg.name
+}
+
+type processorEntity struct {
+	id            string
+	name          string
+	parentGroupId string
+	relationships []relationship
+}
+
+func newProcessorEntity(entity nifiapi.ProcessorEntity) *processorEntity {
+	component := entity.Component
+	var relationships []relationship
+	for _, relationship := range entity.Component.Relationships {
+		relationships = append(relationships, newRelationship(relationship))
+	}
+	return &processorEntity{
+		id:            component.GetId(),
+		name:          component.GetName(),
+		parentGroupId: component.GetParentGroupId(),
+		relationships: relationships,
+	}
+}
+
+func (p *processorEntity) GetId() string {
 	return p.id
 }
 
-func (p *processor) IntoProxy(apiClient *nifiapi.APIClient) componentProxy {
-	return newProcessorProxy(apiClient, p.id)
+func (p *processorEntity) GetGroupId() string {
+	return p.parentGroupId
 }
 
-type funnel struct {
-	id string
+func (p *processorEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
+	return newProcessorService(apiClient, p.id)
 }
 
-func (f *funnel) GetComponentType() string {
-	return ComponentTypeFunnel
+func (p *processorEntity) GetConnectionSourceType() string {
+	return "PROCESSOR"
 }
 
-func (f *funnel) GetId() string {
+func (p *processorEntity) GetConnectionDestinationType() string {
+	return p.GetConnectionSourceType()
+}
+
+func (p *processorEntity) GetDisplayName() string {
+	return SymbolProcessor + p.name
+}
+
+func (p *processorEntity) getRelationshipNames() []string {
+	var relationshipNames []string
+	for _, relationship := range p.relationships {
+		relationshipNames = append(relationshipNames, relationship.name)
+	}
+	return relationshipNames
+}
+
+type relationship struct {
+	name          string
+	autoTerminate bool
+	retry         bool
+}
+
+func newRelationship(dto nifiapi.RelationshipDTO) relationship {
+	return relationship{
+		name:          dto.GetName(),
+		autoTerminate: dto.GetAutoTerminate(),
+		retry:         dto.GetRetry(),
+	}
+}
+
+type funnelEntity struct {
+	id            string
+	parentGroupId string
+}
+
+func newFunnelEntity(entity nifiapi.FunnelEntity) *funnelEntity {
+	return &funnelEntity{
+		id:            entity.Component.GetId(),
+		parentGroupId: entity.Component.GetParentGroupId(),
+	}
+}
+
+func (f *funnelEntity) GetId() string {
 	return f.id
 }
 
-func (f *funnel) GetName() string {
+func (f *funnelEntity) GetGroupId() string {
+	return f.parentGroupId
+}
+
+func (f *funnelEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
+	return newFunnelService(apiClient, f.id)
+}
+
+func (f *funnelEntity) GetConnectionSourceType() string {
+	return "FUNNEL"
+}
+
+func (f *funnelEntity) GetConnectionDestinationType() string {
+	return f.GetConnectionSourceType()
+}
+
+func (f *funnelEntity) GetDisplayName() string {
 	return "Ⴤ"
 }
 
-func (f *funnel) IntoProxy(apiClient *nifiapi.APIClient) componentProxy {
-	return newFunnelProxy(apiClient, f.id)
+type inputPortEntity struct {
+	id            string
+	name          string
+	parentGroupId string
 }
 
-type inputPort struct {
-	id string
+func newInputPort(entity nifiapi.PortEntity) *inputPortEntity {
+	return &inputPortEntity{
+		id:            entity.Component.GetId(),
+		name:          entity.Component.GetName(),
+		parentGroupId: entity.Component.GetParentGroupId(),
+	}
 }
 
-func (ip *inputPort) GetComponentType() string {
-	return ComponentTypeInputPort
-}
-
-func (ip *inputPort) GetId() string {
+func (ip *inputPortEntity) GetId() string {
 	return ip.id
 }
 
-func (ip *inputPort) IntoProxy(apiClient *nifiapi.APIClient) componentProxy {
-	return newInputPortProxy(apiClient, ip.id)
+func (ip *inputPortEntity) GetGroupId() string {
+	return ip.parentGroupId
 }
 
-type outputPort struct {
-	id string
+func (ip *inputPortEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
+	return newInputPortService(apiClient, ip.id)
 }
 
-func (op *outputPort) GetComponentType() string {
-	return ComponentTypeInputPort
+func (ip *inputPortEntity) GetConnectionSourceType() string {
+	return "INPUT_PORT"
 }
 
-func (op *outputPort) GetId() string {
+func (ip *inputPortEntity) GetConnectionDestinationType() string {
+	return ip.GetConnectionSourceType()
+}
+
+func (ip *inputPortEntity) GetDisplayName() string {
+	return SymbolInputPort + ip.name
+}
+
+type outputPortEntity struct {
+	id            string
+	name          string
+	parentGroupId string
+}
+
+func newOutputPortEntity(entity nifiapi.PortEntity) *outputPortEntity {
+	return &outputPortEntity{
+		id:            entity.Component.GetId(),
+		name:          entity.Component.GetName(),
+		parentGroupId: entity.Component.GetParentGroupId(),
+	}
+}
+
+func (op *outputPortEntity) GetId() string {
 	return op.id
 }
 
-func (op *outputPort) IntoProxy(apiClient *nifiapi.APIClient) componentProxy {
-	return newOutputPortProxy(apiClient, op.id)
+func (op *outputPortEntity) GetGroupId() string {
+	return op.parentGroupId
 }
 
-type connection struct {
-	id string
+func (op *outputPortEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
+	return newOutputPortService(apiClient, op.id)
 }
 
-func (c *connection) GetComponentType() string {
-	return ComponentTypeInputPort
+func (op *outputPortEntity) GetConnectionSourceType() string {
+	return "OUTPUT_PORT"
 }
 
-func (c *connection) GetId() string {
+func (op *outputPortEntity) GetConnectionDestinationType() string {
+	return op.GetConnectionSourceType()
+}
+
+func (op *outputPortEntity) GetDisplayName() string {
+	return SymbolOutputPort + op.name
+}
+
+type connectionEntity struct {
+	id              string
+	sourceType      string
+	sourceId        string
+	destinationType string
+	destinationId   string
+}
+
+func newConnectionEntity(entity nifiapi.ConnectionEntity) *connectionEntity {
+	return &connectionEntity{
+		id:              entity.Component.GetId(),
+		sourceType:      entity.Component.Source.GetType(),
+		sourceId:        entity.Component.Source.GetId(),
+		destinationType: entity.Component.Destination.GetType(),
+		destinationId:   entity.Component.Destination.GetId(),
+	}
+}
+
+func (c *connectionEntity) GetId() string {
 	return c.id
 }
 
-func (c *connection) IntoProxy(apiClient *nifiapi.APIClient) componentProxy {
-	return newConnectionProxy(apiClient, c.id)
+func (c *connectionEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
+	return newConnectionService(apiClient, c.id)
 }
 
-type remoteProcessGroup struct {
-	id string
+type remoteProcessGroupEntity struct {
+	id            string
+	name          string
+	parentGroupId string
 }
 
-func (rpg *remoteProcessGroup) GetComponentType() string {
-	return ComponentTypeRemoteProcessGroup
+func newRemoteProcessGroupEntity(entity nifiapi.RemoteProcessGroupEntity) *remoteProcessGroupEntity {
+	return &remoteProcessGroupEntity{
+		id:            entity.Component.GetId(),
+		name:          entity.Component.GetName(),
+		parentGroupId: entity.Component.GetParentGroupId(),
+	}
 }
 
-func (rpg *remoteProcessGroup) GetId() string {
+func (rpg *remoteProcessGroupEntity) GetId() string {
 	return rpg.id
 }
 
-func (rpg *remoteProcessGroup) IntoProxy(apiClient *nifiapi.APIClient) componentProxy {
-	return newRemoteProcessGroupProxy(apiClient, rpg.id)
+func (rpg *remoteProcessGroupEntity) GetGroupId() string {
+	return rpg.parentGroupId
+}
+
+func (rpg *remoteProcessGroupEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
+	return newRemoteProcessGroupService(apiClient, rpg.id)
+}
+
+func (rpg *remoteProcessGroupEntity) GetConnectionSourceType() string {
+	return "REMOTE_OUTPUT_PORT"
+}
+
+func (rpg *remoteProcessGroupEntity) GetConnectionDestinationType() string {
+	return "REMOTE_INPUT_PORT"
+}
+
+func (rpg *remoteProcessGroupEntity) GetDisplayName() string {
+	return SymbolRemoteProcessGroup + rpg.name
 }
 
 type processGroupComponents struct {
-	processGroups       []nifiapi.ProcessGroupEntity
-	processors          []nifiapi.ProcessorEntity
-	remoteProcessGroups []nifiapi.RemoteProcessGroupEntity
-	connections         []nifiapi.ConnectionEntity
-	funnels             []nifiapi.FunnelEntity
-	inputPorts          []nifiapi.PortEntity
-	outputPorts         []nifiapi.PortEntity
+	processGroups       map[string]*processGroupEntity
+	processors          map[string]*processorEntity
+	remoteProcessGroups map[string]*remoteProcessGroupEntity
+	connections         map[string]*connectionEntity
+	funnels             map[string]*funnelEntity
+	inputPorts          map[string]*inputPortEntity
+	outputPorts         map[string]*outputPortEntity
 }
 
-func (pgc *processGroupComponents) findComponent(componentType, id string) componentDescriptor {
-	switch componentType {
+func (pgc *processGroupComponents) findComponent(id string) component {
+	if processGroup := pgc.processGroups[id]; processGroup != nil {
+		return processGroup
+	}
+	if processor := pgc.processors[id]; processor != nil {
+		return processor
+	}
+	if remoteProcessGroup := pgc.remoteProcessGroups[id]; remoteProcessGroup != nil {
+		return remoteProcessGroup
+	}
+	if connection := pgc.connections[id]; connection != nil {
+		return connection
+	}
+	if funnel := pgc.funnels[id]; funnel != nil {
+		return funnel
+	}
+	if inputPort := pgc.inputPorts[id]; inputPort != nil {
+		return inputPort
+	}
+	if outputPort := pgc.outputPorts[id]; outputPort != nil {
+		return outputPort
+	}
+	return nil
+}
+
+func (pgc *processGroupComponents) findConnectable(id string) connectionSource {
+	if processGroup := pgc.processGroups[id]; processGroup != nil {
+		return processGroup
+	}
+	if processor := pgc.processors[id]; processor != nil {
+		return processor
+	}
+	if remoteProcessGroup := pgc.remoteProcessGroups[id]; remoteProcessGroup != nil {
+		return remoteProcessGroup
+	}
+	if funnel := pgc.funnels[id]; funnel != nil {
+		return funnel
+	}
+	if inputPort := pgc.inputPorts[id]; inputPort != nil {
+		return inputPort
+	}
+	if outputPort := pgc.outputPorts[id]; outputPort != nil {
+		return outputPort
+	}
+	return nil
+}
+
+func (pgc *processGroupComponents) findDisplayableConnectionSource(connection *connectionEntity) displayableComponent {
+	switch connection.sourceType {
 	case "PROCESSOR":
-		return pgc.findProcessorComponent(id)
+		return pgc.processGroups[connection.sourceId]
 	case "FUNNEL":
-		return pgc.findFunnelComponent(id)
+		return pgc.funnels[connection.sourceId]
 	case "INPUT_PORT":
-		return pgc.findInputPortComponent(id)
+		return pgc.inputPorts[connection.sourceId]
 	case "OUTPUT_PORT":
-		return pgc.findOutputPortComponent(id)
+		return pgc.outputPorts[connection.sourceId]
 	}
 	return nil
 }
 
-func (pgc *processGroupComponents) findProcessorComponent(id string) componentDescriptor {
-	for _, processor := range pgc.processors {
-		if processor.Component.GetId() == id {
-			return processor.Component
-		}
-	}
-	return nil
-}
-
-func (pgc *processGroupComponents) findFunnelComponent(id string) componentDescriptor {
-	for _, f := range pgc.funnels {
-		if f.Component.GetId() == id {
-			return &funnel{
-				id: f.Component.GetId(),
-			}
-		}
-	}
-	return nil
-}
-
-func (pgc *processGroupComponents) findInputPortComponent(id string) componentDescriptor {
-	for _, inputPort := range pgc.inputPorts {
-		if inputPort.Component.GetId() == id {
-			return inputPort.Component
-		}
-	}
-	return nil
-}
-
-func (pgc *processGroupComponents) findOutputPortComponent(id string) componentDescriptor {
-	for _, outputPort := range pgc.outputPorts {
-		if outputPort.Component.GetId() == id {
-			return outputPort.Component
-		}
+func (pgc *processGroupComponents) findDisplayableConnectionDestination(connection *connectionEntity) displayableComponent {
+	switch connection.destinationType {
+	case "PROCESSOR":
+		return pgc.processGroups[connection.destinationType]
+	case "FUNNEL":
+		return pgc.funnels[connection.destinationType]
+	case "INPUT_PORT":
+		return pgc.inputPorts[connection.destinationType]
+	case "OUTPUT_PORT":
+		return pgc.outputPorts[connection.destinationType]
 	}
 	return nil
 }

@@ -4,9 +4,10 @@ import (
 	"context"
 	"dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"fmt"
+	"net/http"
 	"slices"
-	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -37,7 +38,7 @@ type processGroupScreen struct {
 	helpFlex        *tview.Flex
 	mode            mode
 	components      processGroupComponents
-	sourceComponent connectableComponent
+	sourceComponent connectionSource
 }
 
 func newProcessGroupScreen(app *App, processGroupId string) *processGroupScreen {
@@ -61,55 +62,7 @@ func newProcessGroupScreen(app *App, processGroupId string) *processGroupScreen 
 	instance.list.SetTitle(processGroupId).
 		SetTitleAlign(tview.AlignLeft).
 		SetBorder(true).
-		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			switch instance.mode {
-			case ModeNone:
-				if event.Key() == tcell.KeyESC {
-					if processGroupId != "root" {
-						app.pages.RemovePage(processGroupId)
-						return nil
-					}
-				}
-				switch event.Rune() {
-				case 'r':
-					instance.list.Clear()
-					instance.loadComponents()
-					return nil
-				case 'a':
-					instance.setMode(ModeAdd)
-					return nil
-				case 'c':
-					if selectedComponent := instance.getSelectedComponent(); selectedComponent != nil {
-						if selectedComponent.GetComponentType() == ComponentTypeProcessor {
-							instance.setMode(ModeConnect)
-							instance.sourceComponent = selectedComponent
-						}
-					}
-					return nil
-				case 'd':
-					if selectedComponent := instance.getSelectedComponent(); selectedComponent != nil {
-						instance.deleteComponent(selectedComponent)
-					}
-
-					return nil
-				}
-			case ModeAdd:
-				switch event.Rune() {
-				case 'g':
-					instance.buildAndShowAddProcessGroupForm()
-				case 'p':
-					instance.buildAndShowAddProcessorForm()
-				}
-				instance.setMode(ModeNone)
-				return nil
-			case ModeConnect:
-				if event.Key() == tcell.KeyESC {
-					instance.setMode(ModeNone)
-				}
-			}
-
-			return event
-		})
+		SetInputCapture(instance.handleListInput)
 	return &instance
 }
 
@@ -120,21 +73,80 @@ func (pgs *processGroupScreen) enter() {
 func (pgs *processGroupScreen) loadComponents() {
 	loadingPage := pgs.app.enterLoadingScreen(pgs.processGroupId, "Loading process group")
 
-	proxy := newAsyncProcessGroupProxy(pgs.app.apiClient, pgs.processGroupId)
-	pgs.app.cancelFunc = proxy.cancelFunc
-	proxy.waitGroup.Add(7)
-	processGroupsChannel := proxy.getProcessGroups()
-	processorsChannel := proxy.getProcessors()
-	connectionsChannel := proxy.getConnections()
-	funnelsChannel := proxy.getFunnels()
-	inputPortsChannel := proxy.getInputPorts()
-	outputPortsChannel := proxy.getOutputPorts()
-	remoteProcessGroupsChannel := proxy.getRemoteProcessGroups()
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	errorChannel := make(chan error)
+	proxy := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId)
+	pgs.app.cancelFunc = cancelFunc
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(7)
+	processGroupsChannel := make(chan []processGroupEntity, 1)
+	processorsChannel := make(chan []processorEntity, 1)
+	connectionsChannel := make(chan []connectionEntity, 1)
+	funnelsChannel := make(chan []funnelEntity, 1)
+	inputPortsChannel := make(chan []inputPortEntity, 1)
+	outputPortsChannel := make(chan []outputPortEntity, 1)
+	remoteProcessGroupsChannel := make(chan []remoteProcessGroupEntity, 1)
+	go func() {
+		processGroups, _, err := proxy.getProcessGroups(ctx)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		processGroupsChannel <- processGroups
+	}()
+	go func() {
+		processors, _, err := proxy.getProcessors(ctx)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		processorsChannel <- processors
+	}()
+	go func() {
+		connections, _, err := proxy.getConnections(ctx)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		connectionsChannel <- connections
+	}()
+	go func() {
+		funnels, _, err := proxy.getFunnels(ctx)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		funnelsChannel <- funnels
+	}()
+	go func() {
+		inputPorts, _, err := proxy.getInputPorts(ctx)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		inputPortsChannel <- inputPorts
+	}()
+	go func() {
+		outputPorts, _, err := proxy.getOutputPorts(ctx)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		outputPortsChannel <- outputPorts
+	}()
+	go func() {
+		remoteProcessGroups, _, err := proxy.getRemoteProcessGroups(ctx)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		remoteProcessGroupsChannel <- remoteProcessGroups
+	}()
 
-	go func(ctx context.Context) {
-		proxy.waitGroup.Wait()
+	go func() {
+		waitGroup.Wait()
 		select {
-		case err := <-proxy.errorChannel:
+		case err := <-errorChannel:
 			pgs.app.app.QueueUpdateDraw(func() {
 				frontPage, _ := pgs.app.pages.GetFrontPage()
 				if frontPage != "Loading" {
@@ -151,17 +163,129 @@ func (pgs *processGroupScreen) loadComponents() {
 		inputPorts := <-inputPortsChannel
 		outputPorts := <-outputPortsChannel
 		remoteProcessGroups := <-remoteProcessGroupsChannel
-		pgs.components.processGroups = processGroups.ProcessGroups
-		pgs.components.processors = processors.Processors
-		pgs.components.connections = connections.Connections
-		pgs.components.funnels = funnels.Funnels
-		pgs.components.inputPorts = inputPorts.InputPorts
-		pgs.components.outputPorts = outputPorts.OutputPorts
-		pgs.components.remoteProcessGroups = remoteProcessGroups.RemoteProcessGroups
+		pgs.components = processGroupComponents{}
+		for _, processGroup := range processGroups {
+			pgs.components.processGroups[processGroup.id] = &processGroup
+		}
+		for _, processor := range processors {
+			pgs.components.processors[processor.id] = &processor
+		}
+		for _, connection := range connections {
+			pgs.components.connections[connection.id] = &connection
+		}
+		for _, funnel := range funnels {
+			pgs.components.funnels[funnel.id] = &funnel
+		}
+		for _, inputPort := range inputPorts {
+			pgs.components.inputPorts[inputPort.id] = &inputPort
+		}
+		for _, outputPort := range outputPorts {
+			pgs.components.outputPorts[outputPort.id] = &outputPort
+		}
+		for _, remoteProcessGroup := range remoteProcessGroups {
+			pgs.components.remoteProcessGroups[remoteProcessGroup.id] = &remoteProcessGroup
+		}
 		pgs.app.app.QueueUpdateDraw(func() {
 			pgs.buildAndShowComponents()
 		})
-	}(proxy.ctx)
+	}()
+}
+
+func (pgs *processGroupScreen) addProcessGroupsToList() {
+	for _, pg := range pgs.components.processGroups {
+		pg := pg
+		pgs.list.AddItem(pg.GetDisplayName(), pg.id, 0, func() {
+			switch pgs.mode {
+			case ModeNone:
+				childProcessGroupScreen := newProcessGroupScreen(pgs.app, pg.id)
+				childProcessGroupScreen.enter()
+			case ModeConnect:
+				pgs.buildAndShowConnectForm(pgs.sourceComponent, pg)
+				pgs.setMode(ModeNone)
+			}
+		})
+	}
+}
+
+func (pgs *processGroupScreen) addProcessorsToList() {
+	for _, p := range pgs.components.processors {
+		p := p
+		pgs.list.AddItem(p.GetDisplayName(), p.id, 0, func() {
+			switch pgs.mode {
+			case ModeNone:
+				pgs.onProcessorSelected(p)
+			case ModeConnect:
+				pgs.buildAndShowConnectForm(pgs.sourceComponent, p)
+				pgs.setMode(ModeNone)
+			}
+		})
+	}
+}
+
+func (pgs *processGroupScreen) addRemoteProcessGroupsToList() {
+	for _, rpg := range pgs.components.remoteProcessGroups {
+		rpg := rpg
+		pgs.list.AddItem(rpg.GetDisplayName(), rpg.id, 0, func() {
+			switch pgs.mode {
+			case ModeConnect:
+				pgs.buildAndShowConnectForm(pgs.sourceComponent, rpg)
+				pgs.setMode(ModeNone)
+			}
+		})
+	}
+}
+
+func (pgs *processGroupScreen) addFunnelsToList() {
+	for _, f := range pgs.components.funnels {
+		f := f
+		pgs.list.AddItem(f.GetDisplayName(), f.id, 0, func() {
+			switch pgs.mode {
+			case ModeConnect:
+				pgs.buildAndShowConnectForm(pgs.sourceComponent, f)
+				pgs.setMode(ModeNone)
+			}
+		})
+	}
+}
+
+func (pgs *processGroupScreen) addInputPortsToList() {
+	for _, ip := range pgs.components.inputPorts {
+		ip := ip
+		pgs.list.AddItem(ip.GetDisplayName(), ip.id, 0, func() {
+			switch pgs.mode {
+			case ModeConnect:
+				pgs.buildAndShowConnectForm(pgs.sourceComponent, ip)
+				pgs.setMode(ModeNone)
+			}
+		})
+	}
+}
+
+func (pgs *processGroupScreen) addOutputPortsToList() {
+	for _, op := range pgs.components.outputPorts {
+		op := op
+		pgs.list.AddItem(op.GetDisplayName(), op.id, 0, func() {
+			switch pgs.mode {
+			case ModeConnect:
+				pgs.buildAndShowConnectForm(pgs.sourceComponent, op)
+				pgs.setMode(ModeNone)
+			}
+		})
+	}
+}
+
+func (pgs *processGroupScreen) addConnectionsToList() {
+	for _, connection := range pgs.components.connections {
+		connection := connection
+		sourceComponent := pgs.components.findDisplayableConnectionSource(connection)
+		destComponent := pgs.components.findDisplayableConnectionDestination(connection)
+		if sourceComponent == nil || destComponent == nil {
+			continue
+		}
+		primaryText := sourceComponent.GetDisplayName() + "[" + sourceComponent.GetId() + "]" +
+			destComponent.GetDisplayName() + "[" + destComponent.GetId() + "]"
+		pgs.list.AddItem(primaryText, connection.id, 0, nil)
+	}
 }
 
 func (pgs *processGroupScreen) buildAndShowComponents() {
@@ -172,64 +296,23 @@ func (pgs *processGroupScreen) buildAndShowComponents() {
 	pgs.list.SetChangedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
 		pgs.updateHelp()
 	})
-	for _, processGroup := range pgs.components.processGroups {
-		processGroup := processGroup
-		pgs.list.AddItem(SymbolProcessGroup+processGroup.Component.GetName(), processGroup.Component.GetId(), 0, func() {
-			childProcessGroupScreen := newProcessGroupScreen(pgs.app, *processGroup.Id)
-			childProcessGroupScreen.enter()
-		})
-	}
-	for _, processor := range pgs.components.processors {
-		processor := processor
-		pgs.list.AddItem(SymbolProcessor+processor.Component.GetName(), processor.Component.GetId(), 0, func() {
-			switch pgs.mode {
-			case ModeNone:
-				pgs.onProcessorSelected(&processor)
-			case ModeConnect:
-				if pgs.sourceComponent.GetComponentType() == ComponentTypeProcessor {
-					pgs.buildAndShowConnectProcessorToProcessor(pgs.sourceComponent.GetId(), processor.Component.GetId())
-				}
-				pgs.setMode(ModeNone)
-			}
-		})
-	}
-	for _, remoteProcessGroup := range pgs.components.remoteProcessGroups {
-		remoteProcessGroup := remoteProcessGroup
-		pgs.list.AddItem(SymbolRemoteProcessGroup+remoteProcessGroup.Component.GetName(), remoteProcessGroup.Component.GetId(), 0, nil)
-	}
-	for _, funnel := range pgs.components.funnels {
-		funnel := funnel
-		pgs.list.AddItem(SymbolFunnel, funnel.Component.GetId(), 0, nil)
-	}
-	for _, inputPort := range pgs.components.inputPorts {
-		inputPort := inputPort
-		pgs.list.AddItem(SymbolInputPort+inputPort.Component.GetName(), inputPort.Component.GetId(), 0, nil)
-	}
-	for _, outputPort := range pgs.components.outputPorts {
-		outputPort := outputPort
-		pgs.list.AddItem(SymbolOutputPort+outputPort.Component.GetName(), outputPort.Component.GetId(), 0, nil)
-	}
+	pgs.addProcessGroupsToList()
+	pgs.addProcessorsToList()
+	pgs.addRemoteProcessGroupsToList()
+	pgs.addFunnelsToList()
+	pgs.addInputPortsToList()
+	pgs.addOutputPortsToList()
+	pgs.addConnectionsToList()
 
-	for _, connection := range pgs.components.connections {
-		connection := connection
-		sourceComponent := pgs.components.findComponent(connection.GetSourceType(), connection.GetSourceId())
-		destComponent := pgs.components.findComponent(connection.GetDestinationType(), connection.GetDestinationId())
-		if sourceComponent == nil || destComponent == nil {
-			continue
-		}
-		primaryText := SymbolConnection + sourceComponent.GetName() + "[" + sourceComponent.GetId() + "]" +
-			SymbolConnection + destComponent.GetName() + "[" + destComponent.GetId() + "]"
-		pgs.list.AddItem(primaryText, connection.Component.GetId(), 0, nil)
-	}
 	pgs.app.pages.RemovePage("Loading")
 	pgs.app.pages.SwitchToPage(pgs.processGroupId)
 }
 
-func (pgs *processGroupScreen) onProcessorSelected(processor *nifiapi.ProcessorEntity) {
-	loadingPage := pgs.app.enterLoadingScreen(*processor.Component.Name, "Loading processor details")
+func (pgs *processGroupScreen) onProcessorSelected(processor *processorEntity) {
+	loadingPage := pgs.app.enterLoadingScreen(processor.name, "Loading processor details")
 
 	go func(ctx context.Context) {
-		processorDetails, _, err := pgs.app.apiClient.ProcessorsAPI.GetProcessor(ctx, *processor.Id).Execute()
+		processorDetails, _, err := pgs.app.apiClient.ProcessorsAPI.GetProcessor(ctx, processor.id).Execute()
 		pgs.app.app.QueueUpdateDraw(func() {
 			frontPage, _ := pgs.app.pages.GetFrontPage()
 			if frontPage != "Loading" {
@@ -246,7 +329,7 @@ func (pgs *processGroupScreen) onProcessorSelected(processor *nifiapi.ProcessorE
 }
 
 func (pgs *processGroupScreen) enterProcessorDetailsScreen(processor *nifiapi.ProcessorEntity) {
-	pgs.app.pages.AddAndSwitchToPage(*processor.Id, newProcessorDetailsScreen(pgs.app, processor).pages, true)
+	pgs.app.pages.AddAndSwitchToPage(processor.Component.GetId(), newProcessorDetailsScreen(pgs.app, processor).pages, true)
 }
 
 func (pgs *processGroupScreen) buildAndShowAddProcessGroupForm() {
@@ -343,29 +426,69 @@ func (pgs *processGroupScreen) buildAndShowAddProcessorForm() {
 	pgs.app.pages.AddPage("CreateProcessor", grid, true, true)
 }
 
-func (pgs *processGroupScreen) buildAndShowConnectProcessorToProcessor(sourceId, destinationId string) {
-	var sourceProcessor *nifiapi.ProcessorEntity
-	for _, processor := range pgs.components.processors {
-		if processor.GetId() == sourceId {
-			sourceProcessor = &processor
-			break
+func (pgs *processGroupScreen) buildAndShowConnectForm(source connectionSource, destination connectionDestination) (*http.Response, error) {
+	formHeight := 5
+
+	form := tview.NewForm()
+	var selectedRelationships []string
+	if sourceProcessor := pgs.components.processors[source.GetId()]; sourceProcessor != nil {
+		for _, relationship := range sourceProcessor.getRelationshipNames() {
+			formHeight += 2
+			form.AddCheckbox(relationship, false, func(checked bool) {
+				if checked {
+					selectedRelationships = append(selectedRelationships, relationship)
+				} else {
+					if index := slices.Index(selectedRelationships, relationship); index >= 0 {
+						selectedRelationships = slices.Delete(selectedRelationships, index, index+1)
+					}
+				}
+			})
 		}
 	}
-	var selectedRelationships []string
-	form := tview.NewForm()
-	for _, relationship := range sourceProcessor.Component.GetRelationships() {
-		form.AddCheckbox(relationship.GetName(), false, func(checked bool) {
-			if checked {
-				selectedRelationships = append(selectedRelationships, relationship.GetName())
-			} else {
-				if index := slices.Index(selectedRelationships, relationship.GetName()); index >= 0 {
-					selectedRelationships = slices.Delete(selectedRelationships, index, index+1)
-				}
-			}
+	var inputPorts []inputPortEntity
+	var isLocalInputPort bool
+	selectedInputPortIndex := -1
+	switch destination.(type) {
+	case *processGroupEntity:
+		entities, response, err := newProcessGroupService(pgs.app.apiClient, destination.GetId()).
+			getInputPorts(context.Background())
+		if err != nil {
+			return response, err
+		}
+		inputPorts = entities
+		isLocalInputPort = true
+	case *remoteProcessGroupEntity:
+		entities, response, err := newRemoteProcessGroupService(pgs.app.apiClient, destination.GetId()).
+			getInputPorts()
+		if err != nil {
+			return response, err
+		}
+		inputPorts = entities
+		isLocalInputPort = false
+	}
+
+	if len(inputPorts) > 0 {
+		formHeight += 2
+		var inputPortNames []string
+		for _, ip := range inputPorts {
+			inputPortNames = append(inputPortNames, ip.name)
+		}
+		var label string
+		if isLocalInputPort {
+			label = "Input Ports"
+		} else {
+			label = "Remote Input Ports"
+		}
+		form.AddDropDown(label, inputPortNames, 0, func(option string, optionIndex int) {
+			selectedInputPortIndex = optionIndex
 		})
 	}
+
 	form.AddButton("Create", func() {
-		pgs.createProcessorToProcessorConnection(sourceId, destinationId, selectedRelationships)
+		if selectedInputPortIndex >= 0 {
+			destination = &inputPorts[selectedInputPortIndex]
+		}
+		pgs.createConnection(source, destination, selectedRelationships)
 		pgs.app.pages.RemovePage("CreateConnection")
 	}).
 		AddButton("Cancel", func() {
@@ -380,7 +503,10 @@ func (pgs *processGroupScreen) buildAndShowConnectProcessorToProcessor(sourceId,
 				pgs.app.pages.RemovePage("CreateConnection")
 				return nil
 			case tcell.KeyCtrlS:
-				pgs.createProcessorToProcessorConnection(sourceId, destinationId, selectedRelationships)
+				if selectedInputPortIndex >= 0 {
+					destination = &inputPorts[selectedInputPortIndex]
+				}
+				pgs.createConnection(source, destination, selectedRelationships)
 				pgs.app.pages.RemovePage("CreateConnection")
 				return nil
 			}
@@ -389,24 +515,14 @@ func (pgs *processGroupScreen) buildAndShowConnectProcessorToProcessor(sourceId,
 
 	grid := tview.NewGrid().
 		SetColumns(0, 100, 0).
-		SetRows(0, 5+(len(sourceProcessor.Component.GetRelationships())*2), 0).
+		SetRows(0, formHeight, 0).
 		AddItem(form, 1, 1, 1, 1, 0, 0, true)
 	pgs.app.pages.AddPage("CreateConnection", grid, true, true)
+	return nil, nil
 }
 
 func (pgs *processGroupScreen) createProcessGroup(processGroupName string) {
-	version := int64(0)
-	processGroupEntity := nifiapi.ProcessGroupEntity{
-		Component: &nifiapi.ProcessGroupDTO{
-			Name: &processGroupName,
-		},
-		Revision: &nifiapi.RevisionDTO{
-			Version: &version,
-		},
-	}
-	_, response, err := pgs.app.apiClient.ProcessGroupsAPI.CreateProcessGroup(context.Background(), pgs.processGroupId).
-		Body(processGroupEntity).
-		Execute()
+	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).createProcessGroup(processGroupName)
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
 		return
@@ -416,19 +532,7 @@ func (pgs *processGroupScreen) createProcessGroup(processGroupName string) {
 }
 
 func (pgs *processGroupScreen) createProcessor(processorType, processorName string) {
-	version := int64(0)
-	processorEntity := nifiapi.ProcessorEntity{
-		Component: &nifiapi.ProcessorDTO{
-			Name: &processorName,
-			Type: &processorType,
-		},
-		Revision: &nifiapi.RevisionDTO{
-			Version: &version,
-		},
-	}
-	_, response, err := pgs.app.apiClient.ProcessGroupsAPI.CreateProcessor(context.Background(), pgs.processGroupId).
-		Body(processorEntity).
-		Execute()
+	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).createProcessor(processorType, processorName)
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
 		return
@@ -437,29 +541,9 @@ func (pgs *processGroupScreen) createProcessor(processorType, processorName stri
 	pgs.loadComponents()
 }
 
-func (pgs *processGroupScreen) createProcessorToProcessorConnection(sourceId, destinationId string, relationships []string) {
-	version := int64(0)
-	connectionEntity := nifiapi.ConnectionEntity{
-		Component: &nifiapi.ConnectionDTO{
-			SelectedRelationships: relationships,
-			Source: &nifiapi.ConnectableDTO{
-				Id:      sourceId,
-				GroupId: pgs.processGroupId,
-				Type:    "PROCESSOR",
-			},
-			Destination: &nifiapi.ConnectableDTO{
-				Id:      destinationId,
-				GroupId: pgs.processGroupId,
-				Type:    "PROCESSOR",
-			},
-		},
-		Revision: &nifiapi.RevisionDTO{
-			Version: &version,
-		},
-	}
-	_, response, err := pgs.app.apiClient.ProcessGroupsAPI.CreateConnection(context.Background(), pgs.processGroupId).
-		Body(connectionEntity).
-		Execute()
+func (pgs *processGroupScreen) createConnection(source connectionSource, destination connectionDestination, relationships []string) {
+	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).
+		createConnection(source, destination, relationships)
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
 		return
@@ -468,26 +552,8 @@ func (pgs *processGroupScreen) createProcessorToProcessorConnection(sourceId, de
 	pgs.loadComponents()
 }
 
-func (pgs *processGroupScreen) deleteComponent(component connectableComponent) {
-	response, err := component.IntoProxy(pgs.app.apiClient).Remove()
-	if err != nil {
-		pgs.app.showErrorDialog(response, err)
-		return
-	}
-	pgs.list.Clear()
-	pgs.loadComponents()
-}
-
-func (pgs *processGroupScreen) deleteRemoteProcessGroup(remoteProcessGroupId string) {
-	remoteProcessGroup, response, err := pgs.app.apiClient.RemoteProcessGroupsAPI.GetRemoteProcessGroup(context.Background(), remoteProcessGroupId).
-		Execute()
-	if err != nil {
-		pgs.app.showErrorDialog(response, err)
-		return
-	}
-	_, response, err = pgs.app.apiClient.RemoteProcessGroupsAPI.RemoveRemoteProcessGroup(context.Background(), remoteProcessGroupId).
-		Version(strconv.Itoa(int(remoteProcessGroup.Revision.GetVersion()))).
-		Execute()
+func (pgs *processGroupScreen) deleteComponent(c component) {
+	response, err := c.CreateService(pgs.app.apiClient).Remove()
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
 		return
@@ -502,6 +568,70 @@ func (pgs *processGroupScreen) setMode(mode mode) {
 	pgs.updateHelp()
 }
 
+func (pgs *processGroupScreen) handleListInput(event *tcell.EventKey) *tcell.EventKey {
+	switch pgs.mode {
+	case ModeNone:
+		return pgs.handleNormalModeInput(event)
+	case ModeAdd:
+		return pgs.handleAddModeInput(event)
+	case ModeConnect:
+		return pgs.handleConnectModeInput(event)
+	}
+
+	return event
+}
+
+func (pgs *processGroupScreen) handleNormalModeInput(event *tcell.EventKey) *tcell.EventKey {
+	if event.Key() == tcell.KeyESC {
+		if pgs.processGroupId != "root" {
+			pgs.app.pages.RemovePage(pgs.processGroupId)
+			return nil
+		}
+		return event
+	}
+	switch event.Rune() {
+	case 'r':
+		pgs.list.Clear()
+		pgs.loadComponents()
+		return nil
+	case 'a':
+		pgs.setMode(ModeAdd)
+		return nil
+	case 'c':
+		if selectedConnectable := pgs.getSelectedConnectable(); selectedConnectable != nil {
+			pgs.setMode(ModeConnect)
+			pgs.sourceComponent = selectedConnectable
+		}
+		return nil
+	case 'd':
+		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
+			pgs.deleteComponent(selectedComponent)
+		}
+
+		return nil
+	}
+	return event
+}
+
+func (pgs *processGroupScreen) handleAddModeInput(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Rune() {
+	case 'g':
+		pgs.buildAndShowAddProcessGroupForm()
+	case 'p':
+		pgs.buildAndShowAddProcessorForm()
+	}
+	pgs.setMode(ModeNone)
+	return nil
+}
+
+func (pgs *processGroupScreen) handleConnectModeInput(event *tcell.EventKey) *tcell.EventKey {
+	if event.Key() == tcell.KeyESC {
+		pgs.setMode(ModeNone)
+		return nil
+	}
+	return event
+}
+
 func (pgs *processGroupScreen) updateHelp() {
 	switch pgs.mode {
 	case ModeNone:
@@ -514,17 +644,17 @@ func (pgs *processGroupScreen) updateHelp() {
 			AddItem(tview.NewTextView().SetText("[d]Delete"), len("[d]Delete")+1, 0, false)
 
 		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
-			switch selectedComponent.GetComponentType() {
-			case ComponentTypeProcessGroup:
+			switch selectedComponent.(type) {
+			case *processGroupEntity:
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Enter process group"), len("[Enter]Enter process group")+1, 0, false)
-			case ComponentTypeProcessor:
+			case *processorEntity:
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[c]Connect"), len("[c]Connect")+1, 0, false).
 					AddItem(tview.NewTextView().SetText("[Enter]Processor details"), len("[Enter]Processor details")+1, 0, false)
-			case ComponentTypeFunnel:
+			case *funnelEntity:
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Funnel details"), len("[Enter]Funnel details")+1, 0, false)
-			case ComponentTypeInputPort:
+			case *inputPortEntity:
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Input port details"), len("[Enter]Input port details")+1, 0, false)
-			case ComponentTypeOutputPort:
+			case *outputPortEntity:
 				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Output port details"), len("[Enter]Output port details")+1, 0, false)
 			}
 		}
@@ -539,28 +669,24 @@ func (pgs *processGroupScreen) updateHelp() {
 	}
 }
 
-func (pgs *processGroupScreen) getSelectedComponent() connectableComponent {
+func (pgs *processGroupScreen) getSelectedComponent() component {
 	if pgs.list.GetItemCount() == 0 {
 		return nil
 	}
 	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
-		selectedItemText, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
-		if strings.HasPrefix(selectedItemText, SymbolProcessGroup) {
-			return &processGroup{id: selectedItemId}
-		} else if strings.HasPrefix(selectedItemText, SymbolProcessor) {
-			return &processor{id: selectedItemId}
-		} else if strings.HasPrefix(selectedItemText, SymbolFunnel) {
-			return &funnel{id: selectedItemId}
-		} else if strings.HasPrefix(selectedItemText, SymbolInputPort) {
-			return &inputPort{id: selectedItemId}
-		} else if strings.HasPrefix(selectedItemText, SymbolOutputPort) {
-			return &outputPort{id: selectedItemId}
-		} else if strings.HasPrefix(selectedItemText, SymbolConnection) {
-			return &connection{id: selectedItemId}
-		} else if strings.HasPrefix(selectedItemText, SymbolRemoteProcessGroup) {
-			return &remoteProcessGroup{id: selectedItemId}
-		}
+		_, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
+		return pgs.components.findComponent(selectedItemId)
+	}
+	return nil
+}
+
+func (pgs *processGroupScreen) getSelectedConnectable() connectionSource {
+	if pgs.list.GetItemCount() == 0 {
 		return nil
+	}
+	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
+		_, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
+		return pgs.components.findConnectable(selectedItemId)
 	}
 	return nil
 }
