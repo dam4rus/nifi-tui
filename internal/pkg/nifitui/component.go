@@ -10,19 +10,14 @@ type component interface {
 	CreateService(apiClient *nifiapi.APIClient) entityService
 }
 
-type displayableComponent interface {
-	GetId() string
-	GetDisplayName() string
-}
-
 type connectionSource interface {
-	GetId() string
+	component
 	GetGroupId() string
 	GetConnectionSourceType() string
 }
 
 type connectionDestination interface {
-	GetId() string
+	component
 	GetGroupId() string
 	GetConnectionDestinationType() string
 }
@@ -172,6 +167,7 @@ type inputPortEntity struct {
 	id            string
 	name          string
 	parentGroupId string
+	isRemote      bool
 }
 
 func newInputPort(entity nifiapi.PortEntity) *inputPortEntity {
@@ -179,6 +175,7 @@ func newInputPort(entity nifiapi.PortEntity) *inputPortEntity {
 		id:            entity.Component.GetId(),
 		name:          entity.Component.GetName(),
 		parentGroupId: entity.Component.GetParentGroupId(),
+		isRemote:      false,
 	}
 }
 
@@ -195,6 +192,9 @@ func (ip *inputPortEntity) CreateService(apiClient *nifiapi.APIClient) entitySer
 }
 
 func (ip *inputPortEntity) GetConnectionSourceType() string {
+	if ip.isRemote {
+		return "REMOTE_INPUT_PORT"
+	}
 	return "INPUT_PORT"
 }
 
@@ -210,6 +210,7 @@ type outputPortEntity struct {
 	id            string
 	name          string
 	parentGroupId string
+	isRemote      bool
 }
 
 func newOutputPortEntity(entity nifiapi.PortEntity) *outputPortEntity {
@@ -217,6 +218,7 @@ func newOutputPortEntity(entity nifiapi.PortEntity) *outputPortEntity {
 		id:            entity.Component.GetId(),
 		name:          entity.Component.GetName(),
 		parentGroupId: entity.Component.GetParentGroupId(),
+		isRemote:      false,
 	}
 }
 
@@ -233,6 +235,9 @@ func (op *outputPortEntity) CreateService(apiClient *nifiapi.APIClient) entitySe
 }
 
 func (op *outputPortEntity) GetConnectionSourceType() string {
+	if op.isRemote {
+		return "REMOTE_OUTPUT_PORT"
+	}
 	return "OUTPUT_PORT"
 }
 
@@ -248,17 +253,23 @@ type connectionEntity struct {
 	id              string
 	sourceType      string
 	sourceId        string
+	sourceName      string
 	destinationType string
 	destinationId   string
+	desinationName  string
 }
 
 func newConnectionEntity(entity nifiapi.ConnectionEntity) *connectionEntity {
+	source := entity.Component.Source
+	destination := entity.Component.Destination
 	return &connectionEntity{
 		id:              entity.Component.GetId(),
-		sourceType:      entity.Component.Source.GetType(),
-		sourceId:        entity.Component.Source.GetId(),
-		destinationType: entity.Component.Destination.GetType(),
-		destinationId:   entity.Component.Destination.GetId(),
+		sourceType:      source.GetType(),
+		sourceId:        source.GetId(),
+		sourceName:      source.GetName(),
+		destinationType: destination.GetType(),
+		destinationId:   destination.GetId(),
+		desinationName:  destination.GetName(),
 	}
 }
 
@@ -268,6 +279,28 @@ func (c *connectionEntity) GetId() string {
 
 func (c *connectionEntity) CreateService(apiClient *nifiapi.APIClient) entityService {
 	return newConnectionService(apiClient, c.id)
+}
+
+func (c *connectionEntity) GetDisplayName() string {
+	sourceSymbol := getSymbolOfConnectionSourceType(c.sourceType)
+	destinationSymbol := getSymbolOfConnectionSourceType(c.destinationType)
+	return sourceSymbol + c.sourceName + "[" + c.sourceId + "]" +
+		" -> " + destinationSymbol + c.desinationName + "[" + c.destinationId + "]"
+}
+
+func getSymbolOfConnectionSourceType(sourceType string) string {
+	switch sourceType {
+	case "PROCESSOR":
+		return SymbolProcessor
+	case "FUNNEL":
+		return SymbolFunnel
+	case "INPUT_PORT":
+		return SymbolInputPort
+	case "OUTPUT_PORT":
+		return SymbolOutputPort
+	default:
+		return ""
+	}
 }
 
 type remoteProcessGroupEntity struct {
@@ -318,6 +351,18 @@ type processGroupComponents struct {
 	outputPorts         map[string]*outputPortEntity
 }
 
+func newProcessGroupComponents() processGroupComponents {
+	return processGroupComponents{
+		processGroups:       make(map[string]*processGroupEntity),
+		processors:          make(map[string]*processorEntity),
+		remoteProcessGroups: make(map[string]*remoteProcessGroupEntity),
+		connections:         make(map[string]*connectionEntity),
+		funnels:             make(map[string]*funnelEntity),
+		inputPorts:          make(map[string]*inputPortEntity),
+		outputPorts:         make(map[string]*outputPortEntity),
+	}
+}
+
 func (pgc *processGroupComponents) findComponent(id string) component {
 	if processGroup := pgc.processGroups[id]; processGroup != nil {
 		return processGroup
@@ -361,34 +406,6 @@ func (pgc *processGroupComponents) findConnectable(id string) connectionSource {
 	}
 	if outputPort := pgc.outputPorts[id]; outputPort != nil {
 		return outputPort
-	}
-	return nil
-}
-
-func (pgc *processGroupComponents) findDisplayableConnectionSource(connection *connectionEntity) displayableComponent {
-	switch connection.sourceType {
-	case "PROCESSOR":
-		return pgc.processGroups[connection.sourceId]
-	case "FUNNEL":
-		return pgc.funnels[connection.sourceId]
-	case "INPUT_PORT":
-		return pgc.inputPorts[connection.sourceId]
-	case "OUTPUT_PORT":
-		return pgc.outputPorts[connection.sourceId]
-	}
-	return nil
-}
-
-func (pgc *processGroupComponents) findDisplayableConnectionDestination(connection *connectionEntity) displayableComponent {
-	switch connection.destinationType {
-	case "PROCESSOR":
-		return pgc.processGroups[connection.destinationType]
-	case "FUNNEL":
-		return pgc.funnels[connection.destinationType]
-	case "INPUT_PORT":
-		return pgc.inputPorts[connection.destinationType]
-	case "OUTPUT_PORT":
-		return pgc.outputPorts[connection.destinationType]
 	}
 	return nil
 }

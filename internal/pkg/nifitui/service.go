@@ -5,20 +5,16 @@ import (
 	"dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"net/http"
 	"strconv"
+	"sync"
 )
-
-type nifiComponentListEntity interface {
-	[]processGroupEntity |
-		[]processorEntity |
-		[]funnelEntity |
-		[]inputPortEntity |
-		[]outputPortEntity |
-		[]connectionEntity |
-		[]remoteProcessGroupEntity
-}
 
 type entityService interface {
 	Remove() (*http.Response, error)
+}
+
+type portGetter interface {
+	GetInputPorts(ctx context.Context) ([]inputPortEntity, *http.Response, error)
+	GetOutputPorts(ctx context.Context) ([]outputPortEntity, *http.Response, error)
 }
 
 type processGroupService struct {
@@ -107,23 +103,19 @@ func (pgp *processGroupService) getFunnels(ctx context.Context) ([]funnelEntity,
 	return funnels, nil, nil
 }
 
-func (pgp *processGroupService) getInputPorts(ctx context.Context) ([]inputPortEntity, *http.Response, error) {
+func (pgp *processGroupService) GetInputPorts(ctx context.Context) ([]inputPortEntity, *http.Response, error) {
 	inputPorts, response, err := pgp.service.GetInputPorts(ctx, pgp.processGroupId).Execute()
 	if err != nil {
 		return nil, response, err
 	}
 	var result []inputPortEntity
 	for _, inputPort := range inputPorts.InputPorts {
-		result = append(result, inputPortEntity{
-			id:            inputPort.Component.GetId(),
-			name:          inputPort.Component.GetName(),
-			parentGroupId: inputPort.Component.GetParentGroupId(),
-		})
+		result = append(result, *newInputPort(inputPort))
 	}
 	return result, nil, nil
 }
 
-func (pgp *processGroupService) getOutputPorts(ctx context.Context) ([]outputPortEntity, *http.Response, error) {
+func (pgp *processGroupService) GetOutputPorts(ctx context.Context) ([]outputPortEntity, *http.Response, error) {
 	entities, response, err := pgp.service.GetOutputPorts(ctx, pgp.processGroupId).Execute()
 	if err != nil {
 		return nil, response, err
@@ -145,6 +137,75 @@ func (pgp *processGroupService) getRemoteProcessGroups(ctx context.Context) ([]r
 		remoteProcessGroups = append(remoteProcessGroups, *newRemoteProcessGroupEntity(entity))
 	}
 	return remoteProcessGroups, nil, nil
+}
+
+func (pgp *processGroupService) getComponentsAsync(ctx context.Context) *getComponentsTask {
+	result := newGetComponentsTask()
+	result.waitGroup.Add(7)
+	go func() {
+		defer result.waitGroup.Done()
+		processGroups, _, err := pgp.getProcessGroups(ctx)
+		if err != nil {
+			result.errorChannel <- err
+			return
+		}
+		result.processGroupsChannel <- processGroups
+	}()
+	go func() {
+		defer result.waitGroup.Done()
+		processors, _, err := pgp.getProcessors(ctx)
+		if err != nil {
+			result.errorChannel <- err
+			return
+		}
+		result.processorsChannel <- processors
+	}()
+	go func() {
+		defer result.waitGroup.Done()
+		connections, _, err := pgp.getConnections(ctx)
+		if err != nil {
+			result.errorChannel <- err
+			return
+		}
+		result.connectionsChannel <- connections
+	}()
+	go func() {
+		defer result.waitGroup.Done()
+		funnels, _, err := pgp.getFunnels(ctx)
+		if err != nil {
+			result.errorChannel <- err
+			return
+		}
+		result.funnelsChannel <- funnels
+	}()
+	go func() {
+		defer result.waitGroup.Done()
+		inputPorts, _, err := pgp.GetInputPorts(ctx)
+		if err != nil {
+			result.errorChannel <- err
+			return
+		}
+		result.inputPortsChannel <- inputPorts
+	}()
+	go func() {
+		defer result.waitGroup.Done()
+		outputPorts, _, err := pgp.GetOutputPorts(ctx)
+		if err != nil {
+			result.errorChannel <- err
+			return
+		}
+		result.outputPortsChannel <- outputPorts
+	}()
+	go func() {
+		defer result.waitGroup.Done()
+		remoteProcessGroups, _, err := pgp.getRemoteProcessGroups(ctx)
+		if err != nil {
+			result.errorChannel <- err
+			return
+		}
+		result.remoteProcessGroupsChannel <- remoteProcessGroups
+	}()
+	return &result
 }
 
 func (pgp *processGroupService) createProcessGroup(processGroupName string) (*nifiapi.ProcessGroupEntity, *http.Response, error) {
@@ -169,6 +230,54 @@ func (pgp *processGroupService) createProcessor(processorType, processorName str
 	}
 	return pgp.service.CreateProcessor(context.Background(), pgp.processGroupId).
 		Body(processorEntity).
+		Execute()
+}
+
+func (pgp *processGroupService) createFunnel() (*nifiapi.FunnelEntity, *http.Response, error) {
+	funnelEntity := nifiapi.FunnelEntity{
+		Component: &nifiapi.FunnelDTO{},
+		Revision:  createDefaultRevision(),
+	}
+	return pgp.service.CreateFunnel(context.Background(), pgp.processGroupId).
+		Body(funnelEntity).
+		Execute()
+}
+
+func (pgp *processGroupService) createInputPort(portName string) (*nifiapi.PortEntity, *http.Response, error) {
+	portEntity := nifiapi.PortEntity{
+		Component: &nifiapi.PortDTO{
+			Name: &portName,
+		},
+		Revision: createDefaultRevision(),
+	}
+	return pgp.service.CreateInputPort(context.Background(), pgp.processGroupId).
+		Body(portEntity).
+		Execute()
+}
+
+func (pgp *processGroupService) createOutputPort(portName string) (*nifiapi.PortEntity, *http.Response, error) {
+	portEntity := nifiapi.PortEntity{
+		Component: &nifiapi.PortDTO{
+			Name: &portName,
+		},
+		Revision: createDefaultRevision(),
+	}
+	return pgp.service.CreateOutputPort(context.Background(), pgp.processGroupId).
+		Body(portEntity).
+		Execute()
+}
+
+func (pgp *processGroupService) createRemoteProcessGroup(remoteProcessGroupName string,
+	uri string) (*nifiapi.RemoteProcessGroupEntity, *http.Response, error) {
+	remoteProcessGroupEntity := nifiapi.RemoteProcessGroupEntity{
+		Component: &nifiapi.RemoteProcessGroupDTO{
+			Name:      &remoteProcessGroupName,
+			TargetUri: &uri,
+		},
+		Revision: createDefaultRevision(),
+	}
+	return pgp.service.CreateRemoteProcessGroup(context.Background(), pgp.processGroupId).
+		Body(remoteProcessGroupEntity).
 		Execute()
 }
 
@@ -389,8 +498,8 @@ func (rpg *remoteProcessGroupService) getVersion() (string, *http.Response, erro
 	return strconv.Itoa(int(remoteProcessGroup.Revision.GetVersion())), nil, nil
 }
 
-func (rpg *remoteProcessGroupService) getInputPorts() ([]inputPortEntity, *http.Response, error) {
-	remoteProcessGroup, response, err := rpg.service.GetRemoteProcessGroup(context.Background(), rpg.remoteProcessGroupId).Execute()
+func (rpg *remoteProcessGroupService) GetInputPorts(ctx context.Context) ([]inputPortEntity, *http.Response, error) {
+	remoteProcessGroup, response, err := rpg.service.GetRemoteProcessGroup(ctx, rpg.remoteProcessGroupId).Execute()
 	if err != nil {
 		return nil, response, err
 	}
@@ -400,17 +509,27 @@ func (rpg *remoteProcessGroupService) getInputPorts() ([]inputPortEntity, *http.
 			id:            inputPort.GetId(),
 			name:          inputPort.GetName(),
 			parentGroupId: inputPort.GetGroupId(),
+			isRemote:      true,
 		})
 	}
 	return result, nil, nil
 }
 
-func (rpg *remoteProcessGroupService) getOutputPorts() ([]nifiapi.RemoteProcessGroupPortDTO, *http.Response, error) {
-	outputPorts, response, err := rpg.service.GetRemoteProcessGroup(context.Background(), rpg.remoteProcessGroupId).Execute()
+func (rpg *remoteProcessGroupService) GetOutputPorts(ctx context.Context) ([]outputPortEntity, *http.Response, error) {
+	remoteProcessGroup, response, err := rpg.service.GetRemoteProcessGroup(ctx, rpg.remoteProcessGroupId).Execute()
 	if err != nil {
 		return nil, response, err
 	}
-	return outputPorts.Component.Contents.GetOutputPorts(), nil, nil
+	var result []outputPortEntity
+	for _, outputPort := range remoteProcessGroup.Component.Contents.GetOutputPorts() {
+		result = append(result, outputPortEntity{
+			id:            outputPort.GetId(),
+			name:          outputPort.GetName(),
+			parentGroupId: outputPort.GetGroupId(),
+			isRemote:      true,
+		})
+	}
+	return result, nil, nil
 }
 
 func createDefaultRevision() *nifiapi.RevisionDTO {
@@ -418,4 +537,68 @@ func createDefaultRevision() *nifiapi.RevisionDTO {
 	return &nifiapi.RevisionDTO{
 		Version: &version,
 	}
+}
+
+type getComponentsTask struct {
+	errorChannel               chan error
+	processGroupsChannel       chan []processGroupEntity
+	processorsChannel          chan []processorEntity
+	connectionsChannel         chan []connectionEntity
+	funnelsChannel             chan []funnelEntity
+	inputPortsChannel          chan []inputPortEntity
+	outputPortsChannel         chan []outputPortEntity
+	remoteProcessGroupsChannel chan []remoteProcessGroupEntity
+	waitGroup                  sync.WaitGroup
+}
+
+func newGetComponentsTask() getComponentsTask {
+	return getComponentsTask{
+		errorChannel:               make(chan error),
+		processGroupsChannel:       make(chan []processGroupEntity, 1),
+		processorsChannel:          make(chan []processorEntity, 1),
+		connectionsChannel:         make(chan []connectionEntity, 1),
+		funnelsChannel:             make(chan []funnelEntity, 1),
+		inputPortsChannel:          make(chan []inputPortEntity, 1),
+		outputPortsChannel:         make(chan []outputPortEntity, 1),
+		remoteProcessGroupsChannel: make(chan []remoteProcessGroupEntity, 1),
+	}
+}
+
+func (gct *getComponentsTask) await() (*processGroupComponents, error) {
+	gct.waitGroup.Wait()
+	select {
+	case err := <-gct.errorChannel:
+		return nil, err
+	default:
+	}
+	components := newProcessGroupComponents()
+	for _, processGroup := range <-gct.processGroupsChannel {
+		processGroup := processGroup
+		components.processGroups[processGroup.id] = &processGroup
+	}
+	for _, processor := range <-gct.processorsChannel {
+		processor := processor
+		components.processors[processor.id] = &processor
+	}
+	for _, connection := range <-gct.connectionsChannel {
+		connection := connection
+		components.connections[connection.id] = &connection
+	}
+	for _, funnel := range <-gct.funnelsChannel {
+		funnel := funnel
+		components.funnels[funnel.id] = &funnel
+	}
+	for _, inputPort := range <-gct.inputPortsChannel {
+		inputPort := inputPort
+		components.inputPorts[inputPort.id] = &inputPort
+	}
+	for _, outputPort := range <-gct.outputPortsChannel {
+		outputPort := outputPort
+		components.outputPorts[outputPort.id] = &outputPort
+	}
+	for _, remoteProcessGroup := range <-gct.remoteProcessGroupsChannel {
+		remoteProcessGroup := remoteProcessGroup
+		components.remoteProcessGroups[remoteProcessGroup.id] = &remoteProcessGroup
+	}
+	return &components, nil
 }

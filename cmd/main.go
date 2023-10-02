@@ -41,10 +41,9 @@ func main() {
 			return nil
 		},
 	}
-	rootCmd.Flags().String("url", "", "URL of the Nifi server")
+	rootCmd.Flags().String("url", "https://localhost:8443", "URL of the Nifi server")
 	rootCmd.Flags().String("user-name", "", "User name to login with")
 	rootCmd.Flags().String("password", "", "Password to login with")
-	rootCmd.MarkFlagRequired("url")
 	rootCmd.MarkFlagRequired("username")
 	rootCmd.MarkFlagRequired("password")
 	rootCmd.Execute()

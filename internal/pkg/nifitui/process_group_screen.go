@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -31,11 +30,27 @@ const (
 	SymbolConnection         = "->"
 )
 
+type helpFlex tview.Flex
+
+func newHelpFlex() *helpFlex {
+	return (*helpFlex)(tview.NewFlex().SetDirection(tview.FlexColumn))
+}
+
+func (hf *helpFlex) clear() *helpFlex {
+	(*tview.Flex)(hf).Clear()
+	return hf
+}
+
+func (hf *helpFlex) addHelpText(label string) *helpFlex {
+	(*tview.Flex)(hf).AddItem(tview.NewTextView().SetText(label), len(label)+1, 0, false)
+	return hf
+}
+
 type processGroupScreen struct {
 	app             *App
 	processGroupId  string
 	list            *tview.List
-	helpFlex        *tview.Flex
+	helpFlex        *helpFlex
 	mode            mode
 	components      processGroupComponents
 	sourceComponent connectionSource
@@ -46,10 +61,9 @@ func newProcessGroupScreen(app *App, processGroupId string) *processGroupScreen 
 		app:            app,
 		processGroupId: processGroupId,
 		list:           tview.NewList(),
-		helpFlex:       tview.NewFlex(),
+		helpFlex:       newHelpFlex(),
 	}
 
-	instance.helpFlex.SetDirection(tview.FlexColumn)
 	instance.setMode(ModeNone)
 
 	flex := tview.NewFlex().
@@ -74,79 +88,12 @@ func (pgs *processGroupScreen) loadComponents() {
 	loadingPage := pgs.app.enterLoadingScreen(pgs.processGroupId, "Loading process group")
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	errorChannel := make(chan error)
-	proxy := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId)
 	pgs.app.cancelFunc = cancelFunc
-	var waitGroup sync.WaitGroup
-	waitGroup.Add(7)
-	processGroupsChannel := make(chan []processGroupEntity, 1)
-	processorsChannel := make(chan []processorEntity, 1)
-	connectionsChannel := make(chan []connectionEntity, 1)
-	funnelsChannel := make(chan []funnelEntity, 1)
-	inputPortsChannel := make(chan []inputPortEntity, 1)
-	outputPortsChannel := make(chan []outputPortEntity, 1)
-	remoteProcessGroupsChannel := make(chan []remoteProcessGroupEntity, 1)
-	go func() {
-		processGroups, _, err := proxy.getProcessGroups(ctx)
-		if err != nil {
-			errorChannel <- err
-			return
-		}
-		processGroupsChannel <- processGroups
-	}()
-	go func() {
-		processors, _, err := proxy.getProcessors(ctx)
-		if err != nil {
-			errorChannel <- err
-			return
-		}
-		processorsChannel <- processors
-	}()
-	go func() {
-		connections, _, err := proxy.getConnections(ctx)
-		if err != nil {
-			errorChannel <- err
-			return
-		}
-		connectionsChannel <- connections
-	}()
-	go func() {
-		funnels, _, err := proxy.getFunnels(ctx)
-		if err != nil {
-			errorChannel <- err
-			return
-		}
-		funnelsChannel <- funnels
-	}()
-	go func() {
-		inputPorts, _, err := proxy.getInputPorts(ctx)
-		if err != nil {
-			errorChannel <- err
-			return
-		}
-		inputPortsChannel <- inputPorts
-	}()
-	go func() {
-		outputPorts, _, err := proxy.getOutputPorts(ctx)
-		if err != nil {
-			errorChannel <- err
-			return
-		}
-		outputPortsChannel <- outputPorts
-	}()
-	go func() {
-		remoteProcessGroups, _, err := proxy.getRemoteProcessGroups(ctx)
-		if err != nil {
-			errorChannel <- err
-			return
-		}
-		remoteProcessGroupsChannel <- remoteProcessGroups
-	}()
+	task := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).getComponentsAsync(ctx)
 
 	go func() {
-		waitGroup.Wait()
-		select {
-		case err := <-errorChannel:
+		components, err := task.await()
+		if err != nil {
 			pgs.app.app.QueueUpdateDraw(func() {
 				frontPage, _ := pgs.app.pages.GetFrontPage()
 				if frontPage != "Loading" {
@@ -154,37 +101,8 @@ func (pgs *processGroupScreen) loadComponents() {
 				}
 				loadingPage.SetLabel(fmt.Sprint("Failed to load process group details", err))
 			})
-		default:
 		}
-		processGroups := <-processGroupsChannel
-		processors := <-processorsChannel
-		connections := <-connectionsChannel
-		funnels := <-funnelsChannel
-		inputPorts := <-inputPortsChannel
-		outputPorts := <-outputPortsChannel
-		remoteProcessGroups := <-remoteProcessGroupsChannel
-		pgs.components = processGroupComponents{}
-		for _, processGroup := range processGroups {
-			pgs.components.processGroups[processGroup.id] = &processGroup
-		}
-		for _, processor := range processors {
-			pgs.components.processors[processor.id] = &processor
-		}
-		for _, connection := range connections {
-			pgs.components.connections[connection.id] = &connection
-		}
-		for _, funnel := range funnels {
-			pgs.components.funnels[funnel.id] = &funnel
-		}
-		for _, inputPort := range inputPorts {
-			pgs.components.inputPorts[inputPort.id] = &inputPort
-		}
-		for _, outputPort := range outputPorts {
-			pgs.components.outputPorts[outputPort.id] = &outputPort
-		}
-		for _, remoteProcessGroup := range remoteProcessGroups {
-			pgs.components.remoteProcessGroups[remoteProcessGroup.id] = &remoteProcessGroup
-		}
+		pgs.components = *components
 		pgs.app.app.QueueUpdateDraw(func() {
 			pgs.buildAndShowComponents()
 		})
@@ -277,14 +195,7 @@ func (pgs *processGroupScreen) addOutputPortsToList() {
 func (pgs *processGroupScreen) addConnectionsToList() {
 	for _, connection := range pgs.components.connections {
 		connection := connection
-		sourceComponent := pgs.components.findDisplayableConnectionSource(connection)
-		destComponent := pgs.components.findDisplayableConnectionDestination(connection)
-		if sourceComponent == nil || destComponent == nil {
-			continue
-		}
-		primaryText := sourceComponent.GetDisplayName() + "[" + sourceComponent.GetId() + "]" +
-			destComponent.GetDisplayName() + "[" + destComponent.GetId() + "]"
-		pgs.list.AddItem(primaryText, connection.id, 0, nil)
+		pgs.list.AddItem(connection.GetDisplayName(), connection.id, 0, nil)
 	}
 }
 
@@ -333,42 +244,18 @@ func (pgs *processGroupScreen) enterProcessorDetailsScreen(processor *nifiapi.Pr
 }
 
 func (pgs *processGroupScreen) buildAndShowAddProcessGroupForm() {
+	const PAGE_NAME = "CreateProcessGroup"
 	var newProcessGroupName string
-	form := tview.NewForm().
-		AddInputField("Process group name", "", 0, nil, func(text string) {
-			newProcessGroupName = text
-		}).
-		AddButton("Create", func() {
-			pgs.createProcessGroup(newProcessGroupName)
-			pgs.app.pages.RemovePage("CreateProcessGroup")
-		}).
-		AddButton("Cancel", func() {
-			pgs.app.pages.RemovePage("CreateProcessGroup")
-		})
-	form.SetTitle("Create process group").
-		SetTitleAlign(tview.AlignLeft).
-		SetBorder(true).
-		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			switch event.Key() {
-			case tcell.KeyEsc:
-				pgs.app.pages.RemovePage("CreateProcessGroup")
-				return nil
-			case tcell.KeyCtrlS:
-				pgs.createProcessGroup(newProcessGroupName)
-				pgs.app.pages.RemovePage("CreateProcessGroup")
-				return nil
-			}
-			return event
-		})
-
-	grid := tview.NewGrid().
-		SetColumns(0, 100, 0).
-		SetRows(0, 7, 0).
-		AddItem(form, 1, 1, 1, 1, 0, 0, true)
-	pgs.app.pages.AddPage("CreateProcessGroup", grid, true, true)
+	form := pgs.buildAddComponentForm("Create process group", PAGE_NAME, func() {
+		pgs.createProcessGroup(newProcessGroupName)
+	}).AddInputField("Process group name", "", 0, nil, func(text string) {
+		newProcessGroupName = text
+	})
+	pgs.app.pages.AddPage(PAGE_NAME, buildCenteredGrid(form), true, true)
 }
 
 func (pgs *processGroupScreen) buildAndShowAddProcessorForm() {
+	const PAGE_NAME = "CreateProcessor"
 	var newProcessorName string
 	var newProcessorType string
 
@@ -391,49 +278,74 @@ func (pgs *processGroupScreen) buildAndShowAddProcessorForm() {
 			newProcessorType = text
 		})
 
-	form := tview.NewForm().
+	form := pgs.buildAddComponentForm("Create processor", PAGE_NAME, func() {
+		pgs.createProcessor(newProcessorType, newProcessorName)
+	}).
 		AddFormItem(processorTypeInputField).
 		AddInputField("Processor name", "", 0, nil, func(text string) {
 			newProcessorName = text
-		}).
-		AddButton("Create", func() {
-			pgs.createProcessor(newProcessorType, newProcessorName)
-			pgs.app.pages.RemovePage("CreateProcessor")
-		}).
-		AddButton("Cancel", func() {
-			pgs.app.pages.RemovePage("CreateProcessor")
 		})
-	form.SetTitle("Create process group").
-		SetTitleAlign(tview.AlignLeft).
-		SetBorder(true).
-		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			switch event.Key() {
-			case tcell.KeyEsc:
-				pgs.app.pages.RemovePage("CreateProcessor")
-				return nil
-			case tcell.KeyCtrlS:
-				pgs.createProcessor(newProcessorType, newProcessorName)
-				pgs.app.pages.RemovePage("CreateProcessor")
-				return nil
-			}
-			return event
-		})
+	pgs.app.pages.AddPage(PAGE_NAME, buildCenteredGrid(form), true, true)
+}
 
-	grid := tview.NewGrid().
-		SetColumns(0, 100, 0).
-		SetRows(0, 9, 0).
-		AddItem(form, 1, 1, 1, 1, 0, 0, true)
-	pgs.app.pages.AddPage("CreateProcessor", grid, true, true)
+func (pgs *processGroupScreen) buildAndShowAddInputPortForm() {
+	const PAGE_NAME = "CreateInputPort"
+	var newInputPortName string
+	form := pgs.buildAddComponentForm("Create input port", PAGE_NAME, func() {
+		pgs.createInputPort(newInputPortName)
+	}).
+		AddInputField("Input port name", "", 0, nil, func(text string) {
+			newInputPortName = text
+		})
+	pgs.app.pages.AddPage(PAGE_NAME, buildCenteredGrid(form), true, true)
+}
+
+func (pgs *processGroupScreen) buildAndShowAddOutputPortForm() {
+	const PAGE_NAME = "CreateOutputPort"
+	var newOutputPortName string
+	form := pgs.buildAddComponentForm("Create output port", PAGE_NAME, func() {
+		pgs.createOutputPort(newOutputPortName)
+	}).
+		AddInputField("Output port name", "", 0, nil, func(text string) {
+			newOutputPortName = text
+		})
+	pgs.app.pages.AddPage(PAGE_NAME, buildCenteredGrid(form), true, true)
+}
+
+func (pgs *processGroupScreen) buildAndShowAddRemoteProcessorGroupForm() {
+	const PAGE_NAME = "CreateRemoteProcessGroup"
+	var newRemoteProcessGroupName string
+	var remoteUrl string
+	form := pgs.buildAddComponentForm("Create remote process group", PAGE_NAME, func() {
+		pgs.createRemoteProcessGroup(newRemoteProcessGroupName, remoteUrl)
+	}).
+		AddInputField("Remote process group name", "", 0, nil, func(text string) {
+			newRemoteProcessGroupName = text
+		}).
+		AddInputField("URL", "", 0, nil, func(text string) {
+			remoteUrl = text
+		})
+	pgs.app.pages.AddPage(PAGE_NAME, buildCenteredGrid(form), true, true)
 }
 
 func (pgs *processGroupScreen) buildAndShowConnectForm(source connectionSource, destination connectionDestination) (*http.Response, error) {
-	formHeight := 5
-
-	form := tview.NewForm()
+	const PAGE_NAME = "CreateConnection"
+	var outputPorts []outputPortEntity
+	selectedOutputPortIndex := -1
+	var inputPorts []inputPortEntity
+	selectedInputPortIndex := -1
 	var selectedRelationships []string
+	form := pgs.buildAddComponentForm("Create connection", PAGE_NAME, func() {
+		if selectedOutputPortIndex >= 0 {
+			source = &outputPorts[selectedOutputPortIndex]
+		}
+		if selectedInputPortIndex >= 0 {
+			destination = &inputPorts[selectedInputPortIndex]
+		}
+		pgs.createConnection(source, destination, selectedRelationships)
+	})
 	if sourceProcessor := pgs.components.processors[source.GetId()]; sourceProcessor != nil {
 		for _, relationship := range sourceProcessor.getRelationshipNames() {
-			formHeight += 2
 			form.AddCheckbox(relationship, false, func(checked bool) {
 				if checked {
 					selectedRelationships = append(selectedRelationships, relationship)
@@ -445,79 +357,58 @@ func (pgs *processGroupScreen) buildAndShowConnectForm(source connectionSource, 
 			})
 		}
 	}
-	var inputPorts []inputPortEntity
-	var isLocalInputPort bool
-	selectedInputPortIndex := -1
-	switch destination.(type) {
-	case *processGroupEntity:
-		entities, response, err := newProcessGroupService(pgs.app.apiClient, destination.GetId()).
-			getInputPorts(context.Background())
+
+	if inputPortGetter, ok := source.CreateService(pgs.app.apiClient).(portGetter); ok {
+		entities, response, err := inputPortGetter.GetInputPorts(context.Background())
 		if err != nil {
 			return response, err
 		}
 		inputPorts = entities
-		isLocalInputPort = true
-	case *remoteProcessGroupEntity:
-		entities, response, err := newRemoteProcessGroupService(pgs.app.apiClient, destination.GetId()).
-			getInputPorts()
-		if err != nil {
-			return response, err
-		}
-		inputPorts = entities
-		isLocalInputPort = false
-	}
-
-	if len(inputPorts) > 0 {
-		formHeight += 2
-		var inputPortNames []string
-		for _, ip := range inputPorts {
-			inputPortNames = append(inputPortNames, ip.name)
-		}
-		var label string
-		if isLocalInputPort {
-			label = "Input Ports"
-		} else {
-			label = "Remote Input Ports"
-		}
-		form.AddDropDown(label, inputPortNames, 0, func(option string, optionIndex int) {
-			selectedInputPortIndex = optionIndex
-		})
-	}
-
-	form.AddButton("Create", func() {
-		if selectedInputPortIndex >= 0 {
-			destination = &inputPorts[selectedInputPortIndex]
-		}
-		pgs.createConnection(source, destination, selectedRelationships)
-		pgs.app.pages.RemovePage("CreateConnection")
-	}).
-		AddButton("Cancel", func() {
-			pgs.app.pages.RemovePage("CreateConnection")
-		})
-	form.SetTitle("Create connection").
-		SetTitleAlign(tview.AlignLeft).
-		SetBorder(true).
-		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			switch event.Key() {
-			case tcell.KeyEsc:
-				pgs.app.pages.RemovePage("CreateConnection")
-				return nil
-			case tcell.KeyCtrlS:
-				if selectedInputPortIndex >= 0 {
-					destination = &inputPorts[selectedInputPortIndex]
-				}
-				pgs.createConnection(source, destination, selectedRelationships)
-				pgs.app.pages.RemovePage("CreateConnection")
-				return nil
+		if len(inputPorts) > 0 {
+			var inputPortNames []string
+			var areRemotePorts bool
+			for _, op := range inputPorts {
+				inputPortNames = append(inputPortNames, op.name)
+				areRemotePorts = op.isRemote
 			}
-			return event
-		})
+			var label string
+			if areRemotePorts {
+				label = "Remote Input Ports"
+			} else {
+				label = "Input Ports"
+			}
+			form.AddDropDown(label, inputPortNames, 0, func(option string, optionIndex int) {
+				selectedInputPortIndex = optionIndex
+			})
+		}
+	}
 
-	grid := tview.NewGrid().
-		SetColumns(0, 100, 0).
-		SetRows(0, formHeight, 0).
-		AddItem(form, 1, 1, 1, 1, 0, 0, true)
-	pgs.app.pages.AddPage("CreateConnection", grid, true, true)
+	if outputPortGetter, ok := destination.CreateService(pgs.app.apiClient).(portGetter); ok {
+		entities, response, err := outputPortGetter.GetOutputPorts(context.Background())
+		if err != nil {
+			return response, err
+		}
+		outputPorts = entities
+		if len(outputPorts) > 0 {
+			var outputPortNames []string
+			var areRemotePorts bool
+			for _, op := range outputPorts {
+				outputPortNames = append(outputPortNames, op.name)
+				areRemotePorts = op.isRemote
+			}
+			var label string
+			if areRemotePorts {
+				label = "Remote Output Ports"
+			} else {
+				label = "Output Ports"
+			}
+			form.AddDropDown(label, outputPortNames, 0, func(option string, optionIndex int) {
+				selectedOutputPortIndex = optionIndex
+			})
+		}
+	}
+
+	pgs.app.pages.AddPage(PAGE_NAME, buildCenteredGrid(form), true, true)
 	return nil, nil
 }
 
@@ -533,6 +424,47 @@ func (pgs *processGroupScreen) createProcessGroup(processGroupName string) {
 
 func (pgs *processGroupScreen) createProcessor(processorType, processorName string) {
 	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).createProcessor(processorType, processorName)
+	if err != nil {
+		pgs.app.showErrorDialog(response, err)
+		return
+	}
+	pgs.list.Clear()
+	pgs.loadComponents()
+}
+
+func (pgs *processGroupScreen) createFunnel() {
+	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).createFunnel()
+	if err != nil {
+		pgs.app.showErrorDialog(response, err)
+		return
+	}
+	pgs.list.Clear()
+	pgs.loadComponents()
+}
+
+func (pgs *processGroupScreen) createInputPort(portName string) {
+	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).createInputPort(portName)
+	if err != nil {
+		pgs.app.showErrorDialog(response, err)
+		return
+	}
+	pgs.list.Clear()
+	pgs.loadComponents()
+}
+
+func (pgs *processGroupScreen) createOutputPort(portName string) {
+	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).createOutputPort(portName)
+	if err != nil {
+		pgs.app.showErrorDialog(response, err)
+		return
+	}
+	pgs.list.Clear()
+	pgs.loadComponents()
+}
+
+func (pgs *processGroupScreen) createRemoteProcessGroup(name string, url string) {
+	_, response, err := newProcessGroupService(pgs.app.apiClient, pgs.processGroupId).
+		createRemoteProcessGroup(name, url)
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
 		return
@@ -619,6 +551,14 @@ func (pgs *processGroupScreen) handleAddModeInput(event *tcell.EventKey) *tcell.
 		pgs.buildAndShowAddProcessGroupForm()
 	case 'p':
 		pgs.buildAndShowAddProcessorForm()
+	case 'f':
+		pgs.createFunnel()
+	case 'i':
+		pgs.buildAndShowAddInputPortForm()
+	case 'o':
+		pgs.buildAndShowAddOutputPortForm()
+	case 'r':
+		pgs.buildAndShowAddRemoteProcessorGroupForm()
 	}
 	pgs.setMode(ModeNone)
 	return nil
@@ -635,37 +575,41 @@ func (pgs *processGroupScreen) handleConnectModeInput(event *tcell.EventKey) *tc
 func (pgs *processGroupScreen) updateHelp() {
 	switch pgs.mode {
 	case ModeNone:
-		pgs.helpFlex.Clear()
+		pgs.helpFlex.clear()
 		if pgs.processGroupId == "root" {
-			pgs.helpFlex.AddItem(tview.NewTextView().SetText("[q]Quit"), len("[q]Quit")+1, 0, false)
+			pgs.helpFlex.addHelpText("[q]Quit")
 		}
-		pgs.helpFlex.AddItem(tview.NewTextView().SetText("[r]Refresh"), len("[r]Refresh")+1, 0, false).
-			AddItem(tview.NewTextView().SetText("[a]Add component"), len("[a]Add component")+1, 1, false).
-			AddItem(tview.NewTextView().SetText("[d]Delete"), len("[d]Delete")+1, 0, false)
+
+		pgs.helpFlex.addHelpText("[r]Refresh").
+			addHelpText("[a]Add component").
+			addHelpText("[d]Delete")
 
 		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
 			switch selectedComponent.(type) {
 			case *processGroupEntity:
-				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Enter process group"), len("[Enter]Enter process group")+1, 0, false)
+				pgs.helpFlex.addHelpText("[Enter]Enter process group")
 			case *processorEntity:
-				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[c]Connect"), len("[c]Connect")+1, 0, false).
-					AddItem(tview.NewTextView().SetText("[Enter]Processor details"), len("[Enter]Processor details")+1, 0, false)
+				pgs.helpFlex.addHelpText("[c]Connect").
+					addHelpText("[Enter]Processor details")
 			case *funnelEntity:
-				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Funnel details"), len("[Enter]Funnel details")+1, 0, false)
+				pgs.helpFlex.addHelpText("[Enter]Funnel details")
 			case *inputPortEntity:
-				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Input port details"), len("[Enter]Input port details")+1, 0, false)
+				pgs.helpFlex.addHelpText("[Enter]Input port details")
 			case *outputPortEntity:
-				pgs.helpFlex.AddItem(tview.NewTextView().SetText("[Enter]Output port details"), len("[Enter]Output port details")+1, 0, false)
+				pgs.helpFlex.addHelpText("[Enter]Output port details")
 			}
 		}
 	case ModeAdd:
-		pgs.helpFlex.Clear().
-			AddItem(tview.NewTextView().SetText("Add:"), 5, 0, false).
-			AddItem(tview.NewTextView().SetText("[g]Process Group"), len("[g]Process Group")+1, 0, false).
-			AddItem(tview.NewTextView().SetText("[p]Processor"), len("[p]Processor")+1, 0, false)
+		pgs.helpFlex.clear().
+			addHelpText("Add:").
+			addHelpText("[g]Process Group").
+			addHelpText("[p]Processor").
+			addHelpText("[f]Funnel").
+			addHelpText("[i]Input port").
+			addHelpText("[o]Output port")
 	case ModeConnect:
-		pgs.helpFlex.Clear().
-			AddItem(tview.NewTextView().SetText("Select connection destination"), 0, 1, false)
+		pgs.helpFlex.clear().
+			addHelpText("Select connection destination")
 	}
 }
 
@@ -689,4 +633,34 @@ func (pgs *processGroupScreen) getSelectedConnectable() connectionSource {
 		return pgs.components.findConnectable(selectedItemId)
 	}
 	return nil
+}
+
+func (pgs *processGroupScreen) buildAddComponentForm(title string, pageName string, createFunc func()) *tview.Form {
+	form := tview.NewForm().
+		AddButton("Create", func() {
+			createFunc()
+			pgs.app.pages.RemovePage(pageName)
+		}).
+		AddButton("Cancel", func() {
+			pgs.app.pages.RemovePage(pageName)
+		})
+	form.SetTitle(title).
+		SetTitleAlign(tview.AlignLeft).
+		SetBorder(true).
+		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+			switch event.Key() {
+			case tcell.KeyEsc:
+				pgs.app.pages.RemovePage(pageName)
+				return nil
+			}
+			return event
+		})
+	return form
+}
+
+func buildCenteredGrid(form *tview.Form) *tview.Grid {
+	return tview.NewGrid().
+		SetColumns(0, 100, 0).
+		SetRows(0, 5+form.GetFormItemCount()*2, 0).
+		AddItem(form, 1, 1, 1, 1, 0, 0, true)
 }
