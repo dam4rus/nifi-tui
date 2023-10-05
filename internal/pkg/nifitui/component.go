@@ -23,8 +23,8 @@ type connectionDestination interface {
 }
 
 type runnableComponent interface {
-	CreateComponentStateChanger(apiclient *nifiapi.APIClient) componentStateChanger
 	GetState() string
+	CreateStateChangerService(apiclient *nifiapi.APIClient) componentStateChanger
 }
 
 type processGroupEntity struct {
@@ -109,10 +109,10 @@ func (p *processorEntity) GetConnectionDestinationType() string {
 }
 
 func (p *processorEntity) GetDisplayName() string {
-	return SymbolProcessor + p.name + " " + processorStateSymbol(p.state)
+	return SymbolProcessor + p.name + " " + componentStateSymbol(p.state)
 }
 
-func (p *processorEntity) CreateComponentStateChanger(apiClient *nifiapi.APIClient) componentStateChanger {
+func (p *processorEntity) CreateStateChangerService(apiClient *nifiapi.APIClient) componentStateChanger {
 	return newProcessorService(apiClient, p.id)
 }
 
@@ -183,6 +183,7 @@ type inputPortEntity struct {
 	name          string
 	parentGroupId string
 	isRemote      bool
+	state         string
 }
 
 func newInputPort(entity nifiapi.PortEntity) *inputPortEntity {
@@ -191,6 +192,7 @@ func newInputPort(entity nifiapi.PortEntity) *inputPortEntity {
 		name:          entity.Component.GetName(),
 		parentGroupId: entity.Component.GetParentGroupId(),
 		isRemote:      false,
+		state:         entity.Component.GetState(),
 	}
 }
 
@@ -218,7 +220,15 @@ func (ip *inputPortEntity) GetConnectionDestinationType() string {
 }
 
 func (ip *inputPortEntity) GetDisplayName() string {
-	return SymbolInputPort + ip.name
+	return SymbolInputPort + ip.name + " " + componentStateSymbol(ip.state)
+}
+
+func (ip *inputPortEntity) GetState() string {
+	return ip.state
+}
+
+func (ip *inputPortEntity) CreateStateChangerService(apiclient *nifiapi.APIClient) componentStateChanger {
+	return newInputPortService(apiclient, ip.id)
 }
 
 type outputPortEntity struct {
@@ -226,6 +236,7 @@ type outputPortEntity struct {
 	name          string
 	parentGroupId string
 	isRemote      bool
+	state         string
 }
 
 func newOutputPortEntity(entity nifiapi.PortEntity) *outputPortEntity {
@@ -234,6 +245,7 @@ func newOutputPortEntity(entity nifiapi.PortEntity) *outputPortEntity {
 		name:          entity.Component.GetName(),
 		parentGroupId: entity.Component.GetParentGroupId(),
 		isRemote:      false,
+		state:         entity.Component.GetState(),
 	}
 }
 
@@ -261,7 +273,15 @@ func (op *outputPortEntity) GetConnectionDestinationType() string {
 }
 
 func (op *outputPortEntity) GetDisplayName() string {
-	return SymbolOutputPort + op.name
+	return SymbolOutputPort + op.name + " " + componentStateSymbol(op.state)
+}
+
+func (op *outputPortEntity) GetState() string {
+	return op.state
+}
+
+func (op *outputPortEntity) CreateStateChangerService(apiclient *nifiapi.APIClient) componentStateChanger {
+	return newOutputPortService(apiclient, op.id)
 }
 
 type connectionEntity struct {

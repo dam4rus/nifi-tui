@@ -458,6 +458,29 @@ func (ipp *inputPortService) getVersion() (string, *http.Response, error) {
 	return strconv.Itoa(int(inputPort.Revision.GetVersion())), nil, nil
 }
 
+func (ipp *inputPortService) Start() (*http.Response, error) {
+	return ipp.changeState("RUNNING")
+}
+
+func (ipp *inputPortService) Stop() (*http.Response, error) {
+	return ipp.changeState("STOPPED")
+}
+
+func (ipp *inputPortService) changeState(state string) (*http.Response, error) {
+	outputPort, response, err := ipp.service.GetInputPort(context.Background(), ipp.inputPortId).
+		Execute()
+	if err != nil {
+		return response, err
+	}
+	_, response, err = ipp.service.UpdateRunStatus(context.Background(), ipp.inputPortId).
+		Body(nifiapi.PortRunStatusEntity{
+			Revision: outputPort.Revision,
+			State:    &state,
+		}).
+		Execute()
+	return response, err
+}
+
 type outputPortService struct {
 	service      *nifiapi.OutputPortsAPIService
 	outputPortId string
@@ -477,6 +500,29 @@ func (opp *outputPortService) Remove() (*http.Response, error) {
 	}
 	_, response, err = opp.service.RemoveOutputPort(context.Background(), opp.outputPortId).
 		Version(version).
+		Execute()
+	return response, err
+}
+
+func (opp *outputPortService) Start() (*http.Response, error) {
+	return opp.changeState("RUNNING")
+}
+
+func (opp *outputPortService) Stop() (*http.Response, error) {
+	return opp.changeState("STOPPED")
+}
+
+func (opp *outputPortService) changeState(state string) (*http.Response, error) {
+	outputPort, response, err := opp.service.GetOutputPort(context.Background(), opp.outputPortId).
+		Execute()
+	if err != nil {
+		return response, err
+	}
+	_, response, err = opp.service.UpdateRunStatus(context.Background(), opp.outputPortId).
+		Body(nifiapi.PortRunStatusEntity{
+			Revision: outputPort.Revision,
+			State:    &state,
+		}).
 		Execute()
 	return response, err
 }

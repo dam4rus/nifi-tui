@@ -32,7 +32,7 @@ const (
 	SymbolStopped            = "■"
 )
 
-func processorStateSymbol(state string) string {
+func componentStateSymbol(state string) string {
 	switch state {
 	case "RUNNING":
 		return SymbolStarted
@@ -492,7 +492,7 @@ func (pgs *processGroupScreen) deleteComponent(c component) {
 }
 
 func (pgs *processGroupScreen) startComponent(r runnableComponent) {
-	service := r.CreateComponentStateChanger(pgs.app.apiClient)
+	service := r.CreateStateChangerService(pgs.app.apiClient)
 	response, err := service.Start()
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
@@ -503,7 +503,7 @@ func (pgs *processGroupScreen) startComponent(r runnableComponent) {
 }
 
 func (pgs *processGroupScreen) stopComponent(r runnableComponent) {
-	service := r.CreateComponentStateChanger(pgs.app.apiClient)
+	service := r.CreateStateChangerService(pgs.app.apiClient)
 	response, err := service.Stop()
 	if err != nil {
 		pgs.app.showErrorDialog(response, err)
