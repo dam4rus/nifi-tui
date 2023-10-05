@@ -22,6 +22,11 @@ type connectionDestination interface {
 	GetConnectionDestinationType() string
 }
 
+type runnableComponent interface {
+	CreateComponentStateChanger(apiclient *nifiapi.APIClient) componentStateChanger
+	GetState() string
+}
+
 type processGroupEntity struct {
 	id            string
 	name          string
@@ -104,7 +109,15 @@ func (p *processorEntity) GetConnectionDestinationType() string {
 }
 
 func (p *processorEntity) GetDisplayName() string {
-	return SymbolProcessor + p.name + " " + p.state
+	return SymbolProcessor + p.name + " " + processorStateSymbol(p.state)
+}
+
+func (p *processorEntity) CreateComponentStateChanger(apiClient *nifiapi.APIClient) componentStateChanger {
+	return newProcessorService(apiClient, p.id)
+}
+
+func (p *processorEntity) GetState() string {
+	return p.state
 }
 
 func (p *processorEntity) getRelationshipNames() []string {
@@ -377,28 +390,6 @@ func (pgc *processGroupComponents) findComponent(id string) component {
 	}
 	if connection := pgc.connections[id]; connection != nil {
 		return connection
-	}
-	if funnel := pgc.funnels[id]; funnel != nil {
-		return funnel
-	}
-	if inputPort := pgc.inputPorts[id]; inputPort != nil {
-		return inputPort
-	}
-	if outputPort := pgc.outputPorts[id]; outputPort != nil {
-		return outputPort
-	}
-	return nil
-}
-
-func (pgc *processGroupComponents) findConnectable(id string) connectionSource {
-	if processGroup := pgc.processGroups[id]; processGroup != nil {
-		return processGroup
-	}
-	if processor := pgc.processors[id]; processor != nil {
-		return processor
-	}
-	if remoteProcessGroup := pgc.remoteProcessGroups[id]; remoteProcessGroup != nil {
-		return remoteProcessGroup
 	}
 	if funnel := pgc.funnels[id]; funnel != nil {
 		return funnel

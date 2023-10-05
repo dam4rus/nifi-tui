@@ -28,7 +28,20 @@ const (
 	SymbolInputPort          = "⇥"
 	SymbolOutputPort         = "↦"
 	SymbolConnection         = "->"
+	SymbolStarted            = "▸"
+	SymbolStopped            = "■"
 )
+
+func processorStateSymbol(state string) string {
+	switch state {
+	case "RUNNING":
+		return SymbolStarted
+	case "STOPPED":
+		return SymbolStopped
+	default:
+		return state
+	}
+}
 
 type processGroupScreen struct {
 	app             *App
@@ -478,6 +491,28 @@ func (pgs *processGroupScreen) deleteComponent(c component) {
 	pgs.loadComponents()
 }
 
+func (pgs *processGroupScreen) startComponent(r runnableComponent) {
+	service := r.CreateComponentStateChanger(pgs.app.apiClient)
+	response, err := service.Start()
+	if err != nil {
+		pgs.app.showErrorDialog(response, err)
+		return
+	}
+	pgs.list.Clear()
+	pgs.loadComponents()
+}
+
+func (pgs *processGroupScreen) stopComponent(r runnableComponent) {
+	service := r.CreateComponentStateChanger(pgs.app.apiClient)
+	response, err := service.Stop()
+	if err != nil {
+		pgs.app.showErrorDialog(response, err)
+		return
+	}
+	pgs.list.Clear()
+	pgs.loadComponents()
+}
+
 func (pgs *processGroupScreen) setMode(mode mode) {
 	pgs.mode = mode
 	pgs.sourceComponent = nil
@@ -514,16 +549,29 @@ func (pgs *processGroupScreen) handleNormalModeInput(event *tcell.EventKey) *tce
 		pgs.setMode(ModeAdd)
 		return nil
 	case 'c':
-		if selectedConnectable := pgs.getSelectedConnectable(); selectedConnectable != nil {
-			pgs.setMode(ModeConnect)
-			pgs.sourceComponent = selectedConnectable
+		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
+			if connectable, ok := selectedComponent.(connectionSource); ok {
+				pgs.setMode(ModeConnect)
+				pgs.sourceComponent = connectable
+			}
 		}
 		return nil
 	case 'd':
 		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
 			pgs.deleteComponent(selectedComponent)
 		}
-
+		return nil
+	case 's':
+		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
+			if runnable, ok := selectedComponent.(runnableComponent); ok {
+				switch runnable.GetState() {
+				case "STOPPED":
+					pgs.startComponent(runnable)
+				case "RUNNING":
+					pgs.stopComponent(runnable)
+				}
+			}
+		}
 		return nil
 	}
 	return event
@@ -570,18 +618,31 @@ func (pgs *processGroupScreen) updateHelp() {
 			addHelpText("[d]Delete")
 
 		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
-			switch selectedComponent.(type) {
+			switch component := selectedComponent.(type) {
 			case *processGroupEntity:
-				helpFlex.addHelpText("[Enter]Enter process group")
+				helpFlex.addHelpText("[Enter]Enter process group").
+					addHelpText("[c]Connect")
 			case *processorEntity:
-				helpFlex.addHelpText("[c]Connect").
-					addHelpText("[Enter]Processor details")
+				helpFlex.addHelpText("[Enter]Processor details").
+					addHelpText("[c]Connect")
+				switch component.state {
+				case "STOPPED":
+					helpFlex.addHelpText("[s]Start")
+				case "RUNNING":
+					helpFlex.addHelpText("[s]Stop")
+				}
 			case *funnelEntity:
-				helpFlex.addHelpText("[Enter]Funnel details")
+				helpFlex.addHelpText("[Enter]Funnel details").
+					addHelpText("[c]Connect")
 			case *inputPortEntity:
-				helpFlex.addHelpText("[Enter]Input port details")
+				helpFlex.addHelpText("[Enter]Input port details").
+					addHelpText("[c]Connect")
 			case *outputPortEntity:
-				helpFlex.addHelpText("[Enter]Output port details")
+				helpFlex.addHelpText("[Enter]Output port details").
+					addHelpText("[c]Connect")
+			case *remoteProcessGroupEntity:
+				helpFlex.addHelpText("[Enter]Remote process group details").
+					addHelpText("[c]Connect")
 			}
 		}
 	case ModeAdd:
@@ -610,16 +671,27 @@ func (pgs *processGroupScreen) getSelectedComponent() component {
 	return nil
 }
 
-func (pgs *processGroupScreen) getSelectedConnectable() connectionSource {
-	if pgs.list.GetItemCount() == 0 {
-		return nil
-	}
-	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
-		_, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
-		return pgs.components.findConnectable(selectedItemId)
-	}
-	return nil
-}
+// func (pgs *processGroupScreen) getSelectedConnectable() connectionSource {
+// 	if pgs.list.GetItemCount() == 0 {
+// 		return nil
+// 	}
+// 	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
+// 		_, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
+// 		return pgs.components.findConnectable(selectedItemId)
+// 	}
+// 	return nil
+// }
+
+// func (pgs *processGroupScreen) getSelectedRunnable() runnable {
+// 	if pgs.list.GetItemCount() == 0 {
+// 		return nil
+// 	}
+// 	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
+// 		_, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
+// 		return pgs.components.findComponent(selectedItemId)
+// 	}
+// 	return nil
+// }
 
 func (pgs *processGroupScreen) buildAddComponentForm(title string, pageName string, createFunc func()) *tview.Form {
 	form := tview.NewForm().

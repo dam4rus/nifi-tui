@@ -17,6 +17,11 @@ type portGetter interface {
 	GetOutputPorts(ctx context.Context) ([]outputPortEntity, *http.Response, error)
 }
 
+type componentStateChanger interface {
+	Start() (*http.Response, error)
+	Stop() (*http.Response, error)
+}
+
 type processGroupService struct {
 	apiClient      *nifiapi.APIClient
 	service        *nifiapi.ProcessGroupsAPIService
@@ -321,6 +326,29 @@ func (pp *processorService) Remove() (*http.Response, error) {
 	}
 	_, response, err = pp.service.DeleteProcessor(context.Background(), pp.processorId).
 		Version(version).
+		Execute()
+	return response, err
+}
+
+func (pp *processorService) Start() (*http.Response, error) {
+	return pp.setState("RUNNING")
+}
+
+func (pp *processorService) Stop() (*http.Response, error) {
+	return pp.setState("STOPPED")
+}
+
+func (pp *processorService) setState(state string) (*http.Response, error) {
+	processor, response, err := pp.service.GetProcessor(context.Background(), pp.processorId).
+		Execute()
+	if err != nil {
+		return response, err
+	}
+	_, response, err = pp.service.UpdateRunStatus(context.Background(), pp.processorId).
+		Body(nifiapi.ProcessorRunStatusEntity{
+			Revision: processor.Revision,
+			State:    &state,
+		}).
 		Execute()
 	return response, err
 }
