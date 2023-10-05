@@ -12,14 +12,14 @@ import (
 )
 
 type processorDetailsScreen struct {
-	app                  *App
-	processor            *nifiapi.ProcessorEntity
-	pages                *tview.Pages
-	settingsPanel        *settingsPanel
-	schedulingPanel      *schedulingPanel
-	propertyListView     *tview.List
-	relationshipListView *tview.List
-	modified             bool
+	app                *App
+	processor          *nifiapi.ProcessorEntity
+	pages              *tview.Pages
+	settingsPanel      *settingsPanel
+	schedulingPanel    *schedulingPanel
+	propertiesPanel    *propertiesPanel
+	relationshipsPanel *relationshipsPanel
+	modified           bool
 }
 
 type settingsPanel struct {
@@ -28,6 +28,7 @@ type settingsPanel struct {
 	penaltyDurationTextView *tview.TextView
 	yieldDurationTextView   *tview.TextView
 	bulletinLevelTextView   *tview.TextView
+	helpFlex                *tview.Flex
 }
 
 type settingsFormResult struct {
@@ -43,6 +44,7 @@ type schedulingPanel struct {
 	concurrentTaskTextView     *tview.TextView
 	runScheduleTextView        *tview.TextView
 	executionTextView          *tview.TextView
+	helpFlex                   *tview.Flex
 }
 
 type schedulingFormResult struct {
@@ -52,24 +54,34 @@ type schedulingFormResult struct {
 	execution          string
 }
 
+type propertiesPanel struct {
+	flex     *tview.Flex
+	listView *tview.List
+	helpFlex *tview.Flex
+}
+
+type relationshipsPanel struct {
+	flex     *tview.Flex
+	listView *tview.List
+	helpFlex *tview.Flex
+}
+
 func newProcessorDetailsScreen(app *App, processor *nifiapi.ProcessorEntity) *processorDetailsScreen {
 	processorDetailsScreen := &processorDetailsScreen{
-		app:                  app,
-		processor:            processor,
-		pages:                tview.NewPages(),
-		propertyListView:     tview.NewList(),
-		relationshipListView: tview.NewList(),
+		app:       app,
+		processor: processor,
+		pages:     tview.NewPages(),
 	}
 	processorDetailsScreen.settingsPanel = processorDetailsScreen.buildSettingsPanel()
 	processorDetailsScreen.schedulingPanel = processorDetailsScreen.buildSchedulingPanel()
-	processorDetailsScreen.buildPropertyListPanel()
-	relationshipsFlex := processorDetailsScreen.buildRelationshipsPanel()
+	processorDetailsScreen.propertiesPanel = processorDetailsScreen.buildPropertiesPanel()
+	processorDetailsScreen.relationshipsPanel = processorDetailsScreen.buildRelationshipsPanel()
 
 	processorDetailsScreen.pages.
 		AddAndSwitchToPage("Settings", processorDetailsScreen.settingsPanel.flex, true).
 		AddPage("Scheduling", processorDetailsScreen.schedulingPanel.flex, true, false).
-		AddPage("Properties", processorDetailsScreen.propertyListView, true, false).
-		AddPage("Relationships", relationshipsFlex, true, false)
+		AddPage("Properties", processorDetailsScreen.propertiesPanel.flex, true, false).
+		AddPage("Relationships", processorDetailsScreen.relationshipsPanel.flex, true, false)
 
 	return processorDetailsScreen
 }
@@ -265,13 +277,15 @@ func (s *processorDetailsScreen) applyProperty(key, newValue string) {
 	} else {
 		value = newValue
 	}
-	s.propertyListView.SetItemText(s.propertyListView.GetCurrentItem(), *displayName, value)
+	s.propertiesPanel.listView.SetItemText(s.propertiesPanel.listView.GetCurrentItem(), *displayName, value)
 	s.modified = true
 }
 
 func (s *processorDetailsScreen) applyRelationship(index int, relationship nifiapi.RelationshipDTO) {
 	s.processor.Component.Relationships[index] = relationship
-	s.relationshipListView.SetItemText(s.relationshipListView.GetCurrentItem(), *relationship.Name, buildRelationshipSecondaryText(relationship))
+	s.relationshipsPanel.listView.SetItemText(s.relationshipsPanel.listView.GetCurrentItem(),
+		*relationship.Name,
+		buildRelationshipSecondaryText(relationship))
 	s.modified = true
 }
 
@@ -336,7 +350,15 @@ func (s *processorDetailsScreen) buildSettingsPanel() *settingsPanel {
 		SetLabelWidth(LABEL_WIDTH).
 		SetText(s.processor.Component.Config.GetBulletinLevel())
 
-	settingsPanel.flex = tview.NewFlex().
+	settingsPanel.helpFlex = tview.NewFlex()
+	(*helpFlex)(settingsPanel.helpFlex).
+		addHelpText("[ctrl-s]Save").
+		addHelpText("[e]Edit").
+		addHelpText("[2]Scheduling").
+		addHelpText("[3]Properties").
+		addHelpText("[4]Relationships")
+
+	contentFlex := tview.NewFlex().
 		SetDirection(tview.FlexRow).
 		AddItem(idTextView, 2, 0, false).
 		AddItem(typeTextView, 2, 0, false).
@@ -346,7 +368,7 @@ func (s *processorDetailsScreen) buildSettingsPanel() *settingsPanel {
 		AddItem(settingsPanel.yieldDurationTextView, 2, 0, false).
 		AddItem(settingsPanel.bulletinLevelTextView, 2, 0, false)
 
-	settingsPanel.flex.SetTitle("Settings").
+	contentFlex.SetTitle("Settings").
 		SetTitleAlign(tview.AlignLeft).
 		SetBorder(true).
 		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -356,6 +378,10 @@ func (s *processorDetailsScreen) buildSettingsPanel() *settingsPanel {
 			}
 			return s.handleInput(event)
 		})
+	settingsPanel.flex = tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(contentFlex, 0, 1, true).
+		AddItem(settingsPanel.helpFlex, 1, 0, false)
 	return &settingsPanel
 }
 
@@ -379,14 +405,22 @@ func (s *processorDetailsScreen) buildSchedulingPanel() *schedulingPanel {
 		SetLabel("Execution").
 		SetLabelWidth(LABEL_WIDTH).
 		SetText(s.processor.Component.Config.GetExecutionNode())
-	schedulingPanel.flex = tview.NewFlex().
+
+	schedulingPanel.helpFlex = tview.NewFlex()
+	(*helpFlex)(schedulingPanel.helpFlex).
+		addHelpText("[ctrl-s]Save").
+		addHelpText("[e]Edit").
+		addHelpText("[1]Settings").
+		addHelpText("[3]Properties").
+		addHelpText("[4]Relationships")
+
+	contentFlex := tview.NewFlex().
 		SetDirection(tview.FlexRow).
 		AddItem(schedulingPanel.schedulingStrategyTextView, 2, 0, false).
 		AddItem(schedulingPanel.concurrentTaskTextView, 2, 0, false).
 		AddItem(schedulingPanel.runScheduleTextView, 2, 0, false).
 		AddItem(schedulingPanel.executionTextView, 2, 0, false)
-
-	schedulingPanel.flex.SetTitle("Scheduling").
+	contentFlex.SetTitle("Scheduling").
 		SetTitleAlign(tview.AlignLeft).
 		SetBorder(true).
 		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -396,16 +430,22 @@ func (s *processorDetailsScreen) buildSchedulingPanel() *schedulingPanel {
 			}
 			return s.handleInput(event)
 		})
+
+	schedulingPanel.flex = tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(contentFlex, 0, 1, true).
+		AddItem(schedulingPanel.helpFlex, 1, 0, false)
 	return &schedulingPanel
 }
 
-func (s *processorDetailsScreen) buildPropertyListPanel() {
-	s.propertyListView.SetTitle(s.processor.Component.GetName()).
+func (s *processorDetailsScreen) buildPropertiesPanel() *propertiesPanel {
+	var propertiesPanel propertiesPanel
+	propertiesPanel.listView = tview.NewList()
+	propertiesPanel.listView.SetTitle(s.processor.Component.GetName()).
 		SetTitleAlign(tview.AlignLeft).
 		SetBorder(true).
 		SetInputCapture(s.handleInput)
 
-	s.propertyListView.Clear()
 	for k, v := range s.processor.Component.Config.GetProperties() {
 		k, v := k, v
 		descriptor := s.processor.Component.Config.GetDescriptors()[k]
@@ -421,17 +461,30 @@ func (s *processorDetailsScreen) buildPropertyListPanel() {
 		} else {
 			value = ""
 		}
-		s.propertyListView.AddItem(displayName, value, 0, func() { s.onPropertySelected(k) })
+		propertiesPanel.listView.AddItem(displayName, value, 0, func() { s.onPropertySelected(k) })
 	}
+	propertiesPanel.helpFlex = tview.NewFlex()
+	(*helpFlex)(propertiesPanel.helpFlex).
+		addHelpText("[ctrl-s]Save").
+		addHelpText("[1]Settings").
+		addHelpText("[2]Scheduling").
+		addHelpText("[4]Relationships")
+	propertiesPanel.flex = tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(propertiesPanel.listView, 0, 1, true).
+		AddItem(propertiesPanel.helpFlex, 1, 0, false)
+	return &propertiesPanel
 }
 
-func (s *processorDetailsScreen) buildRelationshipsPanel() *tview.Flex {
-	s.relationshipListView.SetTitle("Relationships").
+func (s *processorDetailsScreen) buildRelationshipsPanel() *relationshipsPanel {
+	var relationshipPanel relationshipsPanel
+	relationshipPanel.listView = tview.NewList()
+	relationshipPanel.listView.SetTitle("Relationships").
 		SetTitleAlign(tview.AlignLeft).
 		SetBorder(true)
 	for i, relationship := range s.processor.Component.Relationships {
 		i, relationship := i, relationship
-		s.relationshipListView.AddItem(relationship.GetName(), buildRelationshipSecondaryText(relationship), 0, func() {
+		relationshipPanel.listView.AddItem(relationship.GetName(), buildRelationshipSecondaryText(relationship), 0, func() {
 			s.onRelationshipSelected(i)
 		})
 	}
@@ -466,10 +519,20 @@ func (s *processorDetailsScreen) buildRelationshipsPanel() *tview.Flex {
 
 	relationshipsFlex := tview.NewFlex().
 		SetDirection(tview.FlexColumn).
-		AddItem(s.relationshipListView, 0, 1, true).
+		AddItem(relationshipPanel.listView, 0, 1, true).
 		AddItem(rightColumn, 0, 1, false)
 	relationshipsFlex.SetInputCapture(s.handleInput)
-	return relationshipsFlex
+	relationshipPanel.helpFlex = tview.NewFlex()
+	(*helpFlex)(relationshipPanel.helpFlex).
+		addHelpText("[ctrl-s]Save").
+		addHelpText("[1]Settings").
+		addHelpText("[2]Scheduling").
+		addHelpText("[3]Properties")
+	relationshipPanel.flex = tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(relationshipsFlex, 0, 1, true).
+		AddItem(relationshipPanel.helpFlex, 1, 0, true)
+	return &relationshipPanel
 }
 
 func (s *processorDetailsScreen) getRelationshipNames() ([]string, []string) {

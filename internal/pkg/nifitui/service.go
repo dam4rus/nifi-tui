@@ -70,10 +70,6 @@ func (pgp *processGroupService) getProcessors(ctx context.Context) ([]processorE
 	}
 	var processors []processorEntity
 	for _, entity := range entities.Processors {
-		var relationships []relationship
-		for _, relationship := range entity.Component.GetRelationships() {
-			relationships = append(relationships, newRelationship(relationship))
-		}
 		processors = append(processors, *newProcessorEntity(entity))
 	}
 	return processors, nil, nil

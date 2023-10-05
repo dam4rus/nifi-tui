@@ -30,27 +30,11 @@ const (
 	SymbolConnection         = "->"
 )
 
-type helpFlex tview.Flex
-
-func newHelpFlex() *helpFlex {
-	return (*helpFlex)(tview.NewFlex().SetDirection(tview.FlexColumn))
-}
-
-func (hf *helpFlex) clear() *helpFlex {
-	(*tview.Flex)(hf).Clear()
-	return hf
-}
-
-func (hf *helpFlex) addHelpText(label string) *helpFlex {
-	(*tview.Flex)(hf).AddItem(tview.NewTextView().SetText(label), len(label)+1, 0, false)
-	return hf
-}
-
 type processGroupScreen struct {
 	app             *App
 	processGroupId  string
 	list            *tview.List
-	helpFlex        *helpFlex
+	helpFlex        *tview.Flex
 	mode            mode
 	components      processGroupComponents
 	sourceComponent connectionSource
@@ -61,7 +45,7 @@ func newProcessGroupScreen(app *App, processGroupId string) *processGroupScreen 
 		app:            app,
 		processGroupId: processGroupId,
 		list:           tview.NewList(),
-		helpFlex:       newHelpFlex(),
+		helpFlex:       tview.NewFlex(),
 	}
 
 	instance.setMode(ModeNone)
@@ -573,42 +557,44 @@ func (pgs *processGroupScreen) handleConnectModeInput(event *tcell.EventKey) *tc
 }
 
 func (pgs *processGroupScreen) updateHelp() {
+	helpFlex := (*helpFlex)(pgs.helpFlex)
 	switch pgs.mode {
 	case ModeNone:
-		pgs.helpFlex.clear()
+		helpFlex.clear()
 		if pgs.processGroupId == "root" {
-			pgs.helpFlex.addHelpText("[q]Quit")
+			helpFlex.addHelpText("[q]Quit")
 		}
 
-		pgs.helpFlex.addHelpText("[r]Refresh").
+		helpFlex.addHelpText("[r]Refresh").
 			addHelpText("[a]Add component").
 			addHelpText("[d]Delete")
 
 		if selectedComponent := pgs.getSelectedComponent(); selectedComponent != nil {
 			switch selectedComponent.(type) {
 			case *processGroupEntity:
-				pgs.helpFlex.addHelpText("[Enter]Enter process group")
+				helpFlex.addHelpText("[Enter]Enter process group")
 			case *processorEntity:
-				pgs.helpFlex.addHelpText("[c]Connect").
+				helpFlex.addHelpText("[c]Connect").
 					addHelpText("[Enter]Processor details")
 			case *funnelEntity:
-				pgs.helpFlex.addHelpText("[Enter]Funnel details")
+				helpFlex.addHelpText("[Enter]Funnel details")
 			case *inputPortEntity:
-				pgs.helpFlex.addHelpText("[Enter]Input port details")
+				helpFlex.addHelpText("[Enter]Input port details")
 			case *outputPortEntity:
-				pgs.helpFlex.addHelpText("[Enter]Output port details")
+				helpFlex.addHelpText("[Enter]Output port details")
 			}
 		}
 	case ModeAdd:
-		pgs.helpFlex.clear().
+		helpFlex.clear().
 			addHelpText("Add:").
 			addHelpText("[g]Process Group").
 			addHelpText("[p]Processor").
 			addHelpText("[f]Funnel").
 			addHelpText("[i]Input port").
-			addHelpText("[o]Output port")
+			addHelpText("[o]Output port").
+			addHelpText("[r]Remote process group")
 	case ModeConnect:
-		pgs.helpFlex.clear().
+		helpFlex.clear().
 			addHelpText("Select connection destination")
 	}
 }

@@ -65,6 +65,7 @@ type processorEntity struct {
 	name          string
 	parentGroupId string
 	relationships []relationship
+	state         string
 }
 
 func newProcessorEntity(entity nifiapi.ProcessorEntity) *processorEntity {
@@ -78,6 +79,7 @@ func newProcessorEntity(entity nifiapi.ProcessorEntity) *processorEntity {
 		name:          component.GetName(),
 		parentGroupId: component.GetParentGroupId(),
 		relationships: relationships,
+		state:         component.GetState(),
 	}
 }
 
@@ -102,7 +104,7 @@ func (p *processorEntity) GetConnectionDestinationType() string {
 }
 
 func (p *processorEntity) GetDisplayName() string {
-	return SymbolProcessor + p.name
+	return SymbolProcessor + p.name + " " + p.state
 }
 
 func (p *processorEntity) getRelationshipNames() []string {
