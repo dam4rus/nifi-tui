@@ -1,8 +1,9 @@
 package main
 
 import (
-	"dam4rus/nifi-tui/internal/pkg/nifitui"
 	"net/url"
+
+	"github.com/dam4rus/nifi-tui/internal/pkg/nifitui"
 
 	"github.com/spf13/cobra"
 )

@@ -2,10 +2,11 @@ package nifitui
 
 import (
 	"context"
-	"dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"net/http"
 	"strconv"
 	"sync"
+
+	"github.com/dam4rus/nifi-tui/internal/pkg/nifiapi"
 )
 
 type entityService interface {

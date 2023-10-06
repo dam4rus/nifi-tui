@@ -3,11 +3,11 @@ package nifitui
 import (
 	"context"
 	"crypto/tls"
-	"dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"fmt"
 	"io"
 	"net/http"
 
+	"github.com/dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )

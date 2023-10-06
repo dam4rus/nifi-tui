@@ -1,8 +1,9 @@
 package nifitui
 
 import (
-	"dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"slices"
+
+	"github.com/dam4rus/nifi-tui/internal/pkg/nifiapi"
 )
 
 type component interface {

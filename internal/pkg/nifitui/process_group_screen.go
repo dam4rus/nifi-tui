@@ -2,11 +2,12 @@ package nifitui
 
 import (
 	"context"
-	"dam4rus/nifi-tui/internal/pkg/nifiapi"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/dam4rus/nifi-tui/internal/pkg/nifiapi"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"

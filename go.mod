@@ -1,4 +1,4 @@
-module dam4rus/nifi-tui
+module github.com/dam4rus/nifi-tui
 
 go 1.20
 
