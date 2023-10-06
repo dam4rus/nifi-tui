@@ -671,28 +671,6 @@ func (pgs *processGroupScreen) getSelectedComponent() component {
 	return nil
 }
 
-// func (pgs *processGroupScreen) getSelectedConnectable() connectionSource {
-// 	if pgs.list.GetItemCount() == 0 {
-// 		return nil
-// 	}
-// 	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
-// 		_, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
-// 		return pgs.components.findConnectable(selectedItemId)
-// 	}
-// 	return nil
-// }
-
-// func (pgs *processGroupScreen) getSelectedRunnable() runnable {
-// 	if pgs.list.GetItemCount() == 0 {
-// 		return nil
-// 	}
-// 	if selectedItemIndex := pgs.list.GetCurrentItem(); selectedItemIndex >= 0 {
-// 		_, selectedItemId := pgs.list.GetItemText(selectedItemIndex)
-// 		return pgs.components.findComponent(selectedItemId)
-// 	}
-// 	return nil
-// }
-
 func (pgs *processGroupScreen) buildAddComponentForm(title string, pageName string, createFunc func()) *tview.Form {
 	form := tview.NewForm().
 		AddButton("Create", func() {
